@@ -13,9 +13,9 @@ Full integration with the dominant perpetual futures DEX. 130+ perp markets, spo
 ## Quick Start
 
 ```bash
-# Set credentials
-export HYPERLIQUID_WALLET="0x..."
-export HYPERLIQUID_PRIVATE_KEY="0x..."
+# Set credentials (agent wallet pattern — recommended)
+export HYPERLIQUID_AGENT_KEY="0x..."       # Agent wallet private key (on VPS)
+export HYPERLIQUID_VAULT_ADDRESS="0x..."   # Main wallet address (NOT the key)
 
 # Check balance
 /hl balance
@@ -27,6 +27,49 @@ export HYPERLIQUID_PRIVATE_KEY="0x..."
 # Close position
 /hl close BTC
 ```
+
+## Configuration
+
+### Agent Wallet Pattern (Recommended)
+
+```bash
+export HYPERLIQUID_AGENT_KEY="0x..."          # Agent wallet signing key
+export HYPERLIQUID_VAULT_ADDRESS="0x..."      # Main wallet address (no key needed here)
+
+# Legacy mode (NOT recommended — main key on VPS can withdraw):
+# export HYPERLIQUID_WALLET="0x..."
+# export HYPERLIQUID_PRIVATE_KEY="0x..."
+
+# Set to "true" to re-enable transfer/withdraw commands.
+# Pointless when using an agent wallet (it can't withdraw anyway),
+# and dangerous when using the main wallet. Default: false.
+# export HYPERLIQUID_ALLOW_WITHDRAWALS=false
+```
+
+### Setup: Registering an Agent Wallet
+
+**Why:** Agent wallets can place and cancel orders but **cannot withdraw funds**. If your VPS is ever compromised, the attacker can trade against you but cannot drain your account. Your main wallet and its private key never touch the VPS.
+
+**How:**
+
+1. Generate a fresh Ethereum keypair for the agent (locally, e.g. with `cast wallet new` or MetaMask "Create account"):
+   - Save the **private key** as `HYPERLIQUID_AGENT_KEY` on the VPS
+   - Note the **address** — this is `HYPERLIQUID_AGENT_ADDRESS` for the approval step
+
+2. Run the approval script **once from your laptop** (not the VPS), with your main wallet key:
+   ```bash
+   HYPERLIQUID_MAIN_PRIVATE_KEY=0x... \
+   HYPERLIQUID_AGENT_ADDRESS=0x... \
+   npm run approve-agent
+   ```
+
+3. The script will print confirmation. Set these on the VPS (and **only** these):
+   ```bash
+   HYPERLIQUID_AGENT_KEY=<agent private key>
+   HYPERLIQUID_VAULT_ADDRESS=<your main wallet address>
+   ```
+
+4. **Never** put `HYPERLIQUID_MAIN_PRIVATE_KEY` on the VPS.
 
 ## Commands
 
@@ -107,17 +150,22 @@ Earn yield by providing liquidity to the HLP vault.
 |---------|-------------|
 | `/hl hlp` | Show vault stats (TVL, APR) |
 | `/hl hlp deposit <amount>` | Deposit USDC to vault |
-| `/hl hlp withdraw <amount>` | Withdraw from vault |
+| `/hl hlp withdraw <amount>` | Withdraw from vault (**DISABLED** by default) |
 | `/hl vaults` | Your vault positions |
 
 ### Transfers
+
+Internal account movements (spot↔perp) are always available. Outbound transfers are disabled by default.
 
 | Command | Description |
 |---------|-------------|
 | `/hl transfer spot2perp <amount>` | Move USDC to perps |
 | `/hl transfer perp2spot <amount>` | Move USDC to spot |
-| `/hl transfer send <address> <amount>` | Send USDC on Hyperliquid |
-| `/hl transfer withdraw <address> <amount>` | Withdraw to L1 (Arbitrum) |
+| `/hl transfer send <address> <amount>` | Send USDC on Hyperliquid (**DISABLED** by default) |
+| `/hl transfer withdraw <address> <amount>` | Withdraw to L1 (Arbitrum) (**DISABLED** by default) |
+
+> Withdrawal commands are disabled by default to protect agent wallet deployments.
+> Set `HYPERLIQUID_ALLOW_WITHDRAWALS=true` to re-enable — unnecessary and dangerous when using an agent wallet.
 
 ### Account Info
 
@@ -153,17 +201,6 @@ Most commands have short aliases:
 | `/hl leaderboard` | `/hl lb` |
 | `/hl referral` | `/hl ref` |
 
-## Configuration
-
-```bash
-# Required for trading
-export HYPERLIQUID_WALLET="0x..."
-export HYPERLIQUID_PRIVATE_KEY="0x..."
-
-# Optional: dry run mode (no real trades)
-export DRY_RUN=true
-```
-
 ## Features
 
 - **130+ Perp Markets** with up to 50x leverage
@@ -173,6 +210,7 @@ export DRY_RUN=true
 - **Points System** - Earn rewards for activity
 - **Subaccounts** - Manage multiple strategies
 - **Real-time WebSocket** - Live orderbook and fills
+- **Agent Wallet Support** - Trade without withdrawal risk
 
 ### Database/History
 

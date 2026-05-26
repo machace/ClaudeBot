@@ -29,21 +29,66 @@ function formatTime(ts: number): string {
   return new Date(ts).toLocaleString();
 }
 
+let _configLogged = false;
+
 function getConfig(): hl.HyperliquidConfig | null {
-  const wallet = process.env.HYPERLIQUID_WALLET;
+  const agentKey = process.env.HYPERLIQUID_AGENT_KEY;
+  const vaultAddress = process.env.HYPERLIQUID_VAULT_ADDRESS;
   const privateKey = process.env.HYPERLIQUID_PRIVATE_KEY;
+  const wallet = process.env.HYPERLIQUID_WALLET;
 
-  if (!wallet || !privateKey) return null;
+  if (agentKey) {
+    if (!vaultAddress) {
+      if (!_configLogged) {
+        logger.error('Hyperliquid: HYPERLIQUID_AGENT_KEY is set but HYPERLIQUID_VAULT_ADDRESS is missing — trading disabled');
+        _configLogged = true;
+      }
+      return null;
+    }
+    if (!_configLogged) {
+      if (privateKey || wallet) {
+        logger.warn('Hyperliquid: HYPERLIQUID_PRIVATE_KEY / HYPERLIQUID_WALLET are set but being ignored — agent wallet (HYPERLIQUID_AGENT_KEY) takes precedence');
+      }
+      logger.info(`Hyperliquid: using agent wallet for ${vaultAddress}`);
+      _configLogged = true;
+    }
+    return {
+      walletAddress: vaultAddress,
+      privateKey: agentKey,
+      vaultAddress,
+      dryRun: process.env.DRY_RUN === 'true',
+    };
+  }
 
-  return {
-    walletAddress: wallet,
-    privateKey,
-    dryRun: process.env.DRY_RUN === 'true',
-  };
+  if (privateKey && wallet) {
+    if (!_configLogged) {
+      logger.warn('Hyperliquid: UNSAFE — main wallet key in use. A compromised VPS can withdraw funds. Use HYPERLIQUID_AGENT_KEY instead.');
+      _configLogged = true;
+    }
+    return {
+      walletAddress: wallet,
+      privateKey,
+      dryRun: process.env.DRY_RUN === 'true',
+    };
+  }
+
+  return null;
+}
+
+const NOT_CONFIGURED_MSG =
+  'Hyperliquid not configured — set HYPERLIQUID_AGENT_KEY + HYPERLIQUID_VAULT_ADDRESS (or see /hl help)';
+
+const WITHDRAWAL_DISABLED_MSG =
+  'Withdrawal commands disabled. Set HYPERLIQUID_ALLOW_WITHDRAWALS=true to enable (NOT recommended when using an agent wallet — agent wallets cannot withdraw).';
+
+function withdrawalsAllowed(): boolean {
+  return process.env.HYPERLIQUID_ALLOW_WITHDRAWALS === 'true';
 }
 
 function getUserId(): string {
-  // Use wallet address as user ID for CLI
+  if (process.env.HYPERLIQUID_AGENT_KEY) {
+    return process.env.HYPERLIQUID_VAULT_ADDRESS || 'default';
+  }
   return process.env.HYPERLIQUID_WALLET || 'default';
 }
 
@@ -314,7 +359,7 @@ async function handleFunding(coin?: string): Promise<string> {
 async function handleBalance(): Promise<string> {
   const config = getConfig();
   if (!config) {
-    return 'Set HYPERLIQUID_WALLET and HYPERLIQUID_PRIVATE_KEY';
+    return NOT_CONFIGURED_MSG;
   }
 
   let state, spotBalances, points;
@@ -375,7 +420,7 @@ async function handleBalance(): Promise<string> {
 async function handlePortfolio(): Promise<string> {
   const config = getConfig();
   if (!config) {
-    return 'Set HYPERLIQUID_WALLET and HYPERLIQUID_PRIVATE_KEY';
+    return NOT_CONFIGURED_MSG;
   }
 
   const portfolio = await hl.getUserPortfolio(config.walletAddress);
@@ -400,7 +445,7 @@ async function handlePortfolio(): Promise<string> {
 async function handleOrders(action?: string, ...args: string[]): Promise<string> {
   const config = getConfig();
   if (!config) {
-    return 'Set HYPERLIQUID_WALLET and HYPERLIQUID_PRIVATE_KEY';
+    return NOT_CONFIGURED_MSG;
   }
 
   if (action === 'cancel' && args[0]) {
@@ -448,7 +493,7 @@ async function handleOrders(action?: string, ...args: string[]): Promise<string>
 async function handleFills(coin?: string): Promise<string> {
   const config = getConfig();
   if (!config) {
-    return 'Set HYPERLIQUID_WALLET and HYPERLIQUID_PRIVATE_KEY';
+    return NOT_CONFIGURED_MSG;
   }
 
   const fills = await hl.getUserFills(config.walletAddress);
@@ -477,7 +522,7 @@ async function handleFills(coin?: string): Promise<string> {
 async function handleHistory(): Promise<string> {
   const config = getConfig();
   if (!config) {
-    return 'Set HYPERLIQUID_WALLET and HYPERLIQUID_PRIVATE_KEY';
+    return NOT_CONFIGURED_MSG;
   }
 
   const orders = await hl.getHistoricalOrders(config.walletAddress);
@@ -503,7 +548,7 @@ async function handleHistory(): Promise<string> {
 async function handleLong(coin: string, size: string, price?: string): Promise<string> {
   const config = getConfig();
   if (!config) {
-    return 'Set HYPERLIQUID_WALLET and HYPERLIQUID_PRIVATE_KEY';
+    return NOT_CONFIGURED_MSG;
   }
 
   if (!coin || !size) {
@@ -553,7 +598,7 @@ async function handleLong(coin: string, size: string, price?: string): Promise<s
 async function handleShort(coin: string, size: string, price?: string): Promise<string> {
   const config = getConfig();
   if (!config) {
-    return 'Set HYPERLIQUID_WALLET and HYPERLIQUID_PRIVATE_KEY';
+    return NOT_CONFIGURED_MSG;
   }
 
   if (!coin || !size) {
@@ -603,7 +648,7 @@ async function handleShort(coin: string, size: string, price?: string): Promise<
 async function handleClose(coin: string): Promise<string> {
   const config = getConfig();
   if (!config) {
-    return 'Set HYPERLIQUID_WALLET and HYPERLIQUID_PRIVATE_KEY';
+    return NOT_CONFIGURED_MSG;
   }
 
   if (!coin) {
@@ -670,7 +715,7 @@ async function handleClose(coin: string): Promise<string> {
 async function handleCloseAll(): Promise<string> {
   const config = getConfig();
   if (!config) {
-    return 'Set HYPERLIQUID_WALLET and HYPERLIQUID_PRIVATE_KEY';
+    return NOT_CONFIGURED_MSG;
   }
 
   const state = await hl.getUserState(config.walletAddress);
@@ -739,7 +784,7 @@ async function handleCloseAll(): Promise<string> {
 async function handleLeverage(coin?: string, leverage?: string): Promise<string> {
   const config = getConfig();
   if (!config) {
-    return 'Set HYPERLIQUID_WALLET and HYPERLIQUID_PRIVATE_KEY';
+    return NOT_CONFIGURED_MSG;
   }
 
   if (!coin || !leverage) {
@@ -761,7 +806,7 @@ async function handleLeverage(coin?: string, leverage?: string): Promise<string>
 async function handleMargin(coin: string, amount: string): Promise<string> {
   const config = getConfig();
   if (!config) {
-    return 'Set HYPERLIQUID_WALLET and HYPERLIQUID_PRIVATE_KEY';
+    return NOT_CONFIGURED_MSG;
   }
 
   if (!coin || !amount) {
@@ -793,7 +838,7 @@ async function handleMargin(coin: string, amount: string): Promise<string> {
 async function handleTwap(action?: string, ...args: string[]): Promise<string> {
   const config = getConfig();
   if (!config) {
-    return 'Set HYPERLIQUID_WALLET and HYPERLIQUID_PRIVATE_KEY';
+    return NOT_CONFIGURED_MSG;
   }
 
   if (action === 'buy' || action === 'sell') {
@@ -874,7 +919,7 @@ async function handleSpot(subcommand?: string, ...args: string[]): Promise<strin
 
   if (subcommand === 'buy' || subcommand === 'sell') {
     if (!config) {
-      return 'Set HYPERLIQUID_WALLET and HYPERLIQUID_PRIVATE_KEY';
+      return NOT_CONFIGURED_MSG;
     }
 
     const [coin, amount, price] = args;
@@ -937,7 +982,7 @@ async function handleHlp(action?: string, amount?: string): Promise<string> {
   }
 
   if (!config) {
-    return 'Set HYPERLIQUID_WALLET and HYPERLIQUID_PRIVATE_KEY';
+    return NOT_CONFIGURED_MSG;
   }
 
   const amountNum = parseFloat(amount || '0');
@@ -951,6 +996,7 @@ async function handleHlp(action?: string, amount?: string): Promise<string> {
   }
 
   if (action === 'withdraw') {
+    if (!withdrawalsAllowed()) return WITHDRAWAL_DISABLED_MSG;
     const result = await hl.withdrawFromHlp(config, amountNum);
     return result.success ? `Withdrew $${formatNumber(amountNum)} from HLP` : `Failed: ${result.error}`;
   }
@@ -961,7 +1007,7 @@ async function handleHlp(action?: string, amount?: string): Promise<string> {
 async function handleVaults(): Promise<string> {
   const config = getConfig();
   if (!config) {
-    return 'Set HYPERLIQUID_WALLET and HYPERLIQUID_PRIVATE_KEY';
+    return NOT_CONFIGURED_MSG;
   }
 
   const equities = await hl.getUserVaultEquities(config.walletAddress);
@@ -985,7 +1031,7 @@ async function handleVaults(): Promise<string> {
 async function handleTransfer(action?: string, ...args: string[]): Promise<string> {
   const config = getConfig();
   if (!config) {
-    return 'Set HYPERLIQUID_WALLET and HYPERLIQUID_PRIVATE_KEY';
+    return NOT_CONFIGURED_MSG;
   }
 
   if (action === 'spot2perp') {
@@ -1007,6 +1053,7 @@ async function handleTransfer(action?: string, ...args: string[]): Promise<strin
   }
 
   if (action === 'send') {
+    if (!withdrawalsAllowed()) return WITHDRAWAL_DISABLED_MSG;
     const [address, amount] = args;
     if (!address || !amount) return 'Usage: /hl transfer send <address> <amount>';
     const amountNum = parseFloat(amount);
@@ -1016,6 +1063,7 @@ async function handleTransfer(action?: string, ...args: string[]): Promise<strin
   }
 
   if (action === 'withdraw') {
+    if (!withdrawalsAllowed()) return WITHDRAWAL_DISABLED_MSG;
     const [address, amount] = args;
     if (!address || !amount) return 'Usage: /hl transfer withdraw <address> <amount>';
     const amountNum = parseFloat(amount);
@@ -1041,7 +1089,7 @@ async function handleTransfer(action?: string, ...args: string[]): Promise<strin
 async function handleFees(): Promise<string> {
   const config = getConfig();
   if (!config) {
-    return 'Set HYPERLIQUID_WALLET and HYPERLIQUID_PRIVATE_KEY';
+    return NOT_CONFIGURED_MSG;
   }
 
   let fees, rateLimit;
@@ -1069,7 +1117,7 @@ async function handleFees(): Promise<string> {
 async function handlePoints(): Promise<string> {
   const config = getConfig();
   if (!config) {
-    return 'Set HYPERLIQUID_WALLET and HYPERLIQUID_PRIVATE_KEY';
+    return NOT_CONFIGURED_MSG;
   }
 
   const points = await hl.getUserPoints(config.walletAddress);
@@ -1086,7 +1134,7 @@ async function handlePoints(): Promise<string> {
 async function handleReferral(): Promise<string> {
   const config = getConfig();
   if (!config) {
-    return 'Set HYPERLIQUID_WALLET and HYPERLIQUID_PRIVATE_KEY';
+    return NOT_CONFIGURED_MSG;
   }
 
   const ref = await hl.getUserReferral(config.walletAddress);
@@ -1117,7 +1165,7 @@ async function handleReferral(): Promise<string> {
 async function handleClaim(): Promise<string> {
   const config = getConfig();
   if (!config) {
-    return 'Set HYPERLIQUID_WALLET and HYPERLIQUID_PRIVATE_KEY';
+    return NOT_CONFIGURED_MSG;
   }
 
   const result = await hl.claimRewards(config);
@@ -1144,7 +1192,7 @@ async function handleLeaderboard(timeframe?: string): Promise<string> {
 async function handleSubaccounts(action?: string, ...args: string[]): Promise<string> {
   const config = getConfig();
   if (!config) {
-    return 'Set HYPERLIQUID_WALLET and HYPERLIQUID_PRIVATE_KEY';
+    return NOT_CONFIGURED_MSG;
   }
 
   if (action === 'create' && args[0]) {
@@ -1487,11 +1535,11 @@ export const skill = {
               {
                 title: 'Advanced',
                 commands: [
-                  { cmd: '/hl hlp [deposit|withdraw] <amt>', description: 'HLP vault deposit/withdraw' },
+                  { cmd: '/hl hlp [deposit|withdraw] <amt>', description: 'HLP vault deposit (withdraw disabled by default)' },
                   { cmd: '/hl vaults', description: 'Your vault positions' },
                   { cmd: '/hl transfer spot2perp|perp2spot <amt>', description: 'Move funds between accounts' },
-                  { cmd: '/hl transfer send <addr> <amt>', description: 'Send USDC on Hyperliquid' },
-                  { cmd: '/hl transfer withdraw <addr> <amt>', description: 'Withdraw to L1' },
+                  { cmd: '/hl transfer send <addr> <amt>', description: 'Send USDC on HL (disabled by default)' },
+                  { cmd: '/hl transfer withdraw <addr> <amt>', description: 'Withdraw to L1 (disabled by default)' },
                   { cmd: '/hl sub [create <name>]', description: 'Subaccounts' },
                   { cmd: '/hl leaderboard [timeframe]', description: 'Top traders' },
                   { cmd: '/hl trades [coin] [limit]', description: 'Trade history (DB)' },
@@ -1510,8 +1558,11 @@ export const skill = {
               '/hl dbstats ETH week      — Weekly ETH trade stats',
             ],
             envVars: [
-              { name: 'HYPERLIQUID_PRIVATE_KEY', description: 'Wallet private key for signing', required: true },
-              { name: 'HYPERLIQUID_WALLET', description: 'Wallet address (derived if omitted)', required: false },
+              { name: 'HYPERLIQUID_AGENT_KEY', description: 'Agent wallet signing key (recommended — cannot withdraw)', required: false },
+              { name: 'HYPERLIQUID_VAULT_ADDRESS', description: 'Main wallet address — required with HYPERLIQUID_AGENT_KEY', required: false },
+              { name: 'HYPERLIQUID_PRIVATE_KEY', description: 'Main wallet key — legacy mode, unsafe on VPS', required: false },
+              { name: 'HYPERLIQUID_WALLET', description: 'Main wallet address — required with HYPERLIQUID_PRIVATE_KEY', required: false },
+              { name: 'HYPERLIQUID_ALLOW_WITHDRAWALS', description: 'Set "true" to re-enable withdrawal commands (default: false)', required: false },
               { name: 'DRY_RUN', description: 'Set to "true" to simulate trades', required: false },
             ],
             seeAlso: [
