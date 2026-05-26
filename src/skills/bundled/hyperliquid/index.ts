@@ -9,6 +9,7 @@ import { logger } from '../../../utils/logger';
 import { initDatabase, type HyperliquidTrade, type HyperliquidPosition, type HyperliquidFunding } from '../../../db';
 import { formatHelp } from '../../help.js';
 import { wrapSkillError } from '../../errors.js';
+import { checkOrderAgainstCeilings } from './risk-ceilings.js';
 
 // =============================================================================
 // HELPERS
@@ -117,6 +118,55 @@ async function logFunding(funding: Omit<HyperliquidFunding, 'userId'>): Promise<
   } catch (e) {
     logger.warn({ error: e }, 'Failed to log funding to database');
   }
+}
+
+// =============================================================================
+// RISK CONTEXT HELPER
+// =============================================================================
+
+interface RiskContext {
+  portfolioValueUsd: number;
+  currentCoinPositionUsd: number;
+  totalOpenNotionalUsd: number;
+  currentMidPrice: number;
+  /** Leverage of the existing position for this coin, or 1 if the coin is flat. */
+  currentCoinLeverage: number;
+}
+
+async function fetchRiskContext(config: hl.HyperliquidConfig, coin: string): Promise<RiskContext> {
+  const coinUpper = coin.toUpperCase();
+  const [state, mids] = await Promise.all([
+    hl.getUserState(config.walletAddress),
+    hl.getAllMids(),
+  ]);
+
+  const portfolioValueUsd = parseFloat(state.marginSummary.accountValue);
+  const currentMidPrice = parseFloat(mids[coinUpper] || '0');
+
+  const coinPos = state.assetPositions.find(
+    ap => ap.position.coin.toUpperCase() === coinUpper && parseFloat(ap.position.szi) !== 0
+  );
+  const currentCoinPositionUsd = coinPos
+    ? parseFloat(coinPos.position.szi) * (currentMidPrice || parseFloat(coinPos.position.entryPx))
+    : 0;
+  // KNOWN LIMITATION: For a coin with no existing position, Hyperliquid
+  // returns no per-coin leverage and we default to 1 here. The actual
+  // leverage applied on entry will be the account-wide max for that
+  // asset. /hl leverage being capped at set-time mitigates this, but a
+  // user who never explicitly set leverage on the asset could open with
+  // higher leverage than HYPERLIQUID_MAX_LEVERAGE. Patch 3 covers this
+  // case in tests; consider fetching account-wide max leverage via the
+  // /info endpoint in a future patch.
+  const currentCoinLeverage = coinPos ? coinPos.position.leverage.value : 1;
+
+  const totalOpenNotionalUsd = state.assetPositions.reduce((sum, ap) => {
+    const szi = parseFloat(ap.position.szi);
+    if (szi === 0) return sum;
+    const px = parseFloat(mids[ap.position.coin] || '0') || parseFloat(ap.position.entryPx);
+    return sum + Math.abs(szi) * px;
+  }, 0);
+
+  return { portfolioValueUsd, currentCoinPositionUsd, totalOpenNotionalUsd, currentMidPrice, currentCoinLeverage };
 }
 
 // =============================================================================
@@ -566,6 +616,25 @@ async function handleLong(coin: string, size: string, price?: string): Promise<s
   }
   const isLimit = !!priceNum;
 
+  // Ceiling check — runs before the order is built or submitted
+  const riskCtx = await fetchRiskContext(config, coinUpper);
+  const effectivePriceLong = priceNum ?? riskCtx.currentMidPrice;
+  const sizeUsdLong = sizeNum * (effectivePriceLong || 1);
+  const ceilingLong = checkOrderAgainstCeilings({
+    coin: coinUpper,
+    side: 'buy',
+    sizeUsd: sizeUsdLong,
+    leverage: riskCtx.currentCoinLeverage,
+    isPerp: true,
+    portfolioValueUsd: riskCtx.portfolioValueUsd,
+    currentCoinPositionUsd: riskCtx.currentCoinPositionUsd,
+    totalOpenNotionalUsd: riskCtx.totalOpenNotionalUsd,
+  });
+  if (!ceilingLong.allowed) {
+    logger.warn({ coin: coinUpper, side: 'buy', sizeUsd: sizeUsdLong, status: 'blocked_by_ceiling', reason: ceilingLong.reason }, 'HL order blocked by ceiling');
+    return `Order blocked by risk ceiling: ${ceilingLong.reason}`;
+  }
+
   const result = await hl.placePerpOrder(config, {
     coin: coinUpper,
     side: 'BUY',
@@ -615,6 +684,25 @@ async function handleShort(coin: string, size: string, price?: string): Promise<
     return 'Invalid price. Must be a positive number.';
   }
   const isLimit = !!priceNum;
+
+  // Ceiling check — runs before the order is built or submitted
+  const riskCtxShort = await fetchRiskContext(config, coinUpper);
+  const effectivePriceShort = priceNum ?? riskCtxShort.currentMidPrice;
+  const sizeUsdShort = sizeNum * (effectivePriceShort || 1);
+  const ceilingShort = checkOrderAgainstCeilings({
+    coin: coinUpper,
+    side: 'sell',
+    sizeUsd: sizeUsdShort,
+    leverage: riskCtxShort.currentCoinLeverage,
+    isPerp: true,
+    portfolioValueUsd: riskCtxShort.portfolioValueUsd,
+    currentCoinPositionUsd: riskCtxShort.currentCoinPositionUsd,
+    totalOpenNotionalUsd: riskCtxShort.totalOpenNotionalUsd,
+  });
+  if (!ceilingShort.allowed) {
+    logger.warn({ coin: coinUpper, side: 'sell', sizeUsd: sizeUsdShort, status: 'blocked_by_ceiling', reason: ceilingShort.reason }, 'HL order blocked by ceiling');
+    return `Order blocked by risk ceiling: ${ceilingShort.reason}`;
+  }
 
   const result = await hl.placePerpOrder(config, {
     coin: coinUpper,
@@ -796,6 +884,21 @@ async function handleLeverage(coin?: string, leverage?: string): Promise<string>
     return 'Leverage must be between 1 and 50';
   }
 
+  // Ceiling check — only leverage is inspected here; position params are irrelevant
+  const ceilingLev = checkOrderAgainstCeilings({
+    coin: coin.toUpperCase(),
+    side: 'buy',
+    sizeUsd: 0,
+    leverage: lev,
+    isPerp: true,
+    portfolioValueUsd: 0,
+    currentCoinPositionUsd: 0,
+    totalOpenNotionalUsd: 0,
+  });
+  if (!ceilingLev.allowed) {
+    return `Leverage blocked by risk ceiling: ${ceilingLev.reason}`;
+  }
+
   const result = await hl.updateLeverage(config, coin.toUpperCase(), lev);
   if (result.success) {
     return `${coin.toUpperCase()} leverage set to ${lev}x`;
@@ -847,10 +950,32 @@ async function handleTwap(action?: string, ...args: string[]): Promise<string> {
       return `Usage: /hl twap ${action} <coin> <size> <minutes>\nExample: /hl twap buy BTC 1 60`;
     }
 
+    const twapCoinUpper = coin.toUpperCase();
+    const twapSizeNum = parseFloat(size);
+    const twapSide = action === 'buy' ? 'buy' as const : 'sell' as const;
+
+    // Ceiling check — runs before the TWAP is submitted; uses mid price as size estimate
+    const twapRiskCtx = await fetchRiskContext(config, twapCoinUpper);
+    const twapSizeUsd = twapSizeNum * (twapRiskCtx.currentMidPrice || 1);
+    const twapCeiling = checkOrderAgainstCeilings({
+      coin: twapCoinUpper,
+      side: twapSide,
+      sizeUsd: twapSizeUsd,
+      leverage: twapRiskCtx.currentCoinLeverage,
+      isPerp: true,
+      portfolioValueUsd: twapRiskCtx.portfolioValueUsd,
+      currentCoinPositionUsd: twapRiskCtx.currentCoinPositionUsd,
+      totalOpenNotionalUsd: twapRiskCtx.totalOpenNotionalUsd,
+    });
+    if (!twapCeiling.allowed) {
+      logger.warn({ coin: twapCoinUpper, side: twapSide, twapSizeUsd, status: 'blocked_by_ceiling', reason: twapCeiling.reason }, 'HL TWAP order blocked by ceiling');
+      return `TWAP order blocked by risk ceiling: ${twapCeiling.reason}`;
+    }
+
     const result = await hl.placeTwapOrder(config, {
-      coin: coin.toUpperCase(),
+      coin: twapCoinUpper,
       side: action === 'buy' ? 'BUY' : 'SELL',
-      size: parseFloat(size),
+      size: twapSizeNum,
       durationMinutes: parseInt(duration, 10),
     });
 

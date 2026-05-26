@@ -71,6 +71,30 @@ export HYPERLIQUID_VAULT_ADDRESS="0x..."      # Main wallet address (no key need
 
 4. **Never** put `HYPERLIQUID_MAIN_PRIVATE_KEY` on the VPS.
 
+## Risk Ceilings
+
+Hard caps enforced at the skill layer **before** any order reaches the exchange.
+These are driven by env vars — the LLM cannot talk its way around them at runtime.
+A blocked order returns an explicit error message and is logged with `status: blocked_by_ceiling`.
+
+| Env var | What it caps | Example |
+|---------|-------------|---------|
+| `HYPERLIQUID_MAX_LEVERAGE` | Maximum leverage that `/hl leverage` will accept | `3` |
+| `HYPERLIQUID_ALLOWED_ASSETS` | Comma-separated whitelist of tradeable coins (`*` = no restriction) | `BTC,ETH,SOL,HYPE` |
+| `HYPERLIQUID_MAX_POSITION_USD` | Per-coin absolute position cap in USD | `500` |
+| `HYPERLIQUID_MAX_POSITION_PCT` | Per-coin cap as % of account equity | `10` |
+| `HYPERLIQUID_MAX_TOTAL_NOTIONAL_USD` | Total open perp exposure cap in USD | `2000` |
+| `HYPERLIQUID_MIN_PORTFOLIO_RESERVE_PCT` | Minimum % of equity that must remain un-exposed | `20` |
+
+**Behaviour on denial:**
+- The order is rejected before submission — nothing is sent to the exchange.
+- A structured warning is logged with `status: blocked_by_ceiling` and the offending values.
+- The user sees an error explaining which ceiling was hit and what the limit is.
+
+**Closing positions is always allowed** regardless of ceilings, so you can never be locked into a position.
+
+**Leverage ceiling** is enforced at `/hl leverage` time (when you explicitly set it), not per-order — the per-order checks (whitelist, size caps) cover exposure growth.
+
 ## Commands
 
 ### Market Data

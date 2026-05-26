@@ -137,15 +137,18 @@ export interface SafetyManager extends EventEmitter {
 // IMPLEMENTATION
 // =============================================================================
 
+// Global safety defaults. These are the floor for all 21 venues.
+// Individual venues (e.g. Hyperliquid) layer additional hard caps on top
+// via their own env-var ceilings — see src/skills/bundled/hyperliquid/risk-ceilings.ts.
 const DEFAULT_CONFIG: SafetyConfig = {
-  dailyLossLimit: 500,
-  dailyLossLimitPct: 5,
-  maxDrawdownPct: 20,
+  dailyLossLimit: 100,             // was 500 — tighter dollar floor
+  dailyLossLimitPct: 3,            // was 5
+  maxDrawdownPct: 10,              // was 20
   maxCorrelation: 0.8,
-  maxConcentrationPct: 25,
-  maxSameDirectionPositions: 5,
+  maxConcentrationPct: 20,         // was 25
+  maxSameDirectionPositions: 3,    // was 5
   cooldownMs: 4 * 60 * 60 * 1000, // 4 hours
-  autoCloseOnBreaker: false,
+  autoCloseOnBreaker: true,        // was false — auto-close on breaker trip
 };
 
 export function createSafetyManager(db: Database, config: Partial<SafetyConfig> = {}): SafetyManager {
