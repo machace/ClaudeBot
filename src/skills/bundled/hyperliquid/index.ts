@@ -32,7 +32,7 @@ function formatTime(ts: number): string {
 
 let _configLogged = false;
 
-function getConfig(): hl.HyperliquidConfig | null {
+export function getConfig(): hl.HyperliquidConfig | null {
   const agentKey = process.env.HYPERLIQUID_AGENT_KEY;
   const vaultAddress = process.env.HYPERLIQUID_VAULT_ADDRESS;
   const privateKey = process.env.HYPERLIQUID_PRIVATE_KEY;
@@ -82,7 +82,7 @@ const NOT_CONFIGURED_MSG =
 const WITHDRAWAL_DISABLED_MSG =
   'Withdrawal commands disabled. Set HYPERLIQUID_ALLOW_WITHDRAWALS=true to enable (NOT recommended when using an agent wallet — agent wallets cannot withdraw).';
 
-function withdrawalsAllowed(): boolean {
+export function withdrawalsAllowed(): boolean {
   return process.env.HYPERLIQUID_ALLOW_WITHDRAWALS === 'true';
 }
 

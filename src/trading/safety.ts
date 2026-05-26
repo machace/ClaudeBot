@@ -140,7 +140,7 @@ export interface SafetyManager extends EventEmitter {
 // Global safety defaults. These are the floor for all 21 venues.
 // Individual venues (e.g. Hyperliquid) layer additional hard caps on top
 // via their own env-var ceilings — see src/skills/bundled/hyperliquid/risk-ceilings.ts.
-const DEFAULT_CONFIG: SafetyConfig = {
+export const DEFAULT_CONFIG: SafetyConfig = {
   dailyLossLimit: 100,             // was 500 — tighter dollar floor
   dailyLossLimitPct: 3,            // was 5
   maxDrawdownPct: 10,              // was 20
