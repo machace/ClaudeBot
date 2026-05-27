@@ -81,3 +81,5 @@ CLAWDBOT_ARCHITECTURE.md
 # Standalone compute API server (monetization layer — hosted only)
 src/api/
 .vercel
+data/decisions.jsonl
+data/lessons.jsonl
