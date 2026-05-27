@@ -15,10 +15,29 @@ import * as hyperliquid from '../../exchanges/hyperliquid';
 // =============================================================================
 
 function getWallet(): string | null {
-  return process.env.HYPERLIQUID_WALLET || null;
+  // Agent mode: read trades for the main wallet (vault), not the agent's own address
+  return process.env.HYPERLIQUID_VAULT_ADDRESS
+      || process.env.HYPERLIQUID_WALLET
+      || null;
 }
 
 function getHyperliquidConfig(): { config: HyperliquidConfig; wallet: string } | null {
+  // Agent mode (preferred): agent key signs, vault address is the account
+  const agentKey = process.env.HYPERLIQUID_AGENT_KEY;
+  const vaultAddress = process.env.HYPERLIQUID_VAULT_ADDRESS;
+  if (agentKey && vaultAddress) {
+    return {
+      config: {
+        walletAddress: vaultAddress,
+        privateKey: agentKey,
+        vaultAddress,
+        testnet: process.env.HYPERLIQUID_NETWORK === 'testnet',
+        dryRun: process.env.DRY_RUN === 'true',
+      },
+      wallet: vaultAddress,
+    };
+  }
+  // Legacy mode: main wallet directly
   const wallet = process.env.HYPERLIQUID_WALLET;
   const privateKey = process.env.HYPERLIQUID_PRIVATE_KEY;
   if (!wallet || !privateKey) return null;
@@ -26,6 +45,7 @@ function getHyperliquidConfig(): { config: HyperliquidConfig; wallet: string } |
     config: {
       walletAddress: wallet,
       privateKey,
+      testnet: process.env.HYPERLIQUID_NETWORK === 'testnet',
       dryRun: process.env.DRY_RUN === 'true',
     },
     wallet,
@@ -41,7 +61,7 @@ async function balanceHandler(
   _context: HandlerContext
 ): Promise<HandlerResult> {
   const wallet = getWallet();
-  if (!wallet) return errorResult('Set HYPERLIQUID_WALLET');
+  if (!wallet) return errorResult('Hyperliquid not configured — set HYPERLIQUID_AGENT_KEY and HYPERLIQUID_VAULT_ADDRESS');
   try {
     const state = await hyperliquid.getUserState(wallet);
     return JSON.stringify({
@@ -59,7 +79,7 @@ async function positionsHandler(
   _context: HandlerContext
 ): Promise<HandlerResult> {
   const wallet = getWallet();
-  if (!wallet) return errorResult('Set HYPERLIQUID_WALLET');
+  if (!wallet) return errorResult('Hyperliquid not configured — set HYPERLIQUID_AGENT_KEY and HYPERLIQUID_VAULT_ADDRESS');
   try {
     const state = await hyperliquid.getUserState(wallet);
     const positions = state.assetPositions
@@ -85,7 +105,7 @@ async function ordersHandler(
   _context: HandlerContext
 ): Promise<HandlerResult> {
   const wallet = getWallet();
-  if (!wallet) return errorResult('Set HYPERLIQUID_WALLET');
+  if (!wallet) return errorResult('Hyperliquid not configured — set HYPERLIQUID_AGENT_KEY and HYPERLIQUID_VAULT_ADDRESS');
   try {
     const orders = await hyperliquid.getOpenOrders(wallet);
     return JSON.stringify(orders.map(o => ({
@@ -149,7 +169,7 @@ async function longHandler(
   context: HandlerContext
 ): Promise<HandlerResult> {
   const env = getHyperliquidConfig();
-  if (!env) return errorResult('Set HYPERLIQUID_WALLET and HYPERLIQUID_PRIVATE_KEY');
+  if (!env) return errorResult('Hyperliquid not configured — set HYPERLIQUID_AGENT_KEY and HYPERLIQUID_VAULT_ADDRESS and HYPERLIQUID_PRIVATE_KEY');
   const coin = toolInput.coin as string;
   const size = toolInput.size as number;
   const leverage = toolInput.leverage as number | undefined;
@@ -185,7 +205,7 @@ async function shortHandler(
   context: HandlerContext
 ): Promise<HandlerResult> {
   const env = getHyperliquidConfig();
-  if (!env) return errorResult('Set HYPERLIQUID_WALLET and HYPERLIQUID_PRIVATE_KEY');
+  if (!env) return errorResult('Hyperliquid not configured — set HYPERLIQUID_AGENT_KEY and HYPERLIQUID_VAULT_ADDRESS and HYPERLIQUID_PRIVATE_KEY');
   const coin = toolInput.coin as string;
   const size = toolInput.size as number;
   const leverage = toolInput.leverage as number | undefined;
@@ -221,7 +241,7 @@ async function closeHandler(
   context: HandlerContext
 ): Promise<HandlerResult> {
   const env = getHyperliquidConfig();
-  if (!env) return errorResult('Set HYPERLIQUID_WALLET and HYPERLIQUID_PRIVATE_KEY');
+  if (!env) return errorResult('Hyperliquid not configured — set HYPERLIQUID_AGENT_KEY and HYPERLIQUID_VAULT_ADDRESS and HYPERLIQUID_PRIVATE_KEY');
   const coin = toolInput.coin as string;
   try {
     // Get current position
@@ -260,7 +280,7 @@ async function cancelHandler(
   _context: HandlerContext
 ): Promise<HandlerResult> {
   const env = getHyperliquidConfig();
-  if (!env) return errorResult('Set HYPERLIQUID_WALLET and HYPERLIQUID_PRIVATE_KEY');
+  if (!env) return errorResult('Hyperliquid not configured — set HYPERLIQUID_AGENT_KEY and HYPERLIQUID_VAULT_ADDRESS and HYPERLIQUID_PRIVATE_KEY');
   const coin = toolInput.coin as string;
   const orderId = toolInput.order_id as number;
   try {
@@ -276,7 +296,7 @@ async function cancelAllHandler(
   _context: HandlerContext
 ): Promise<HandlerResult> {
   const env = getHyperliquidConfig();
-  if (!env) return errorResult('Set HYPERLIQUID_WALLET and HYPERLIQUID_PRIVATE_KEY');
+  if (!env) return errorResult('Hyperliquid not configured — set HYPERLIQUID_AGENT_KEY and HYPERLIQUID_VAULT_ADDRESS and HYPERLIQUID_PRIVATE_KEY');
   const coin = toolInput.coin as string | undefined;
   try {
     const result = await hyperliquid.cancelAllOrders(env.config, coin);
@@ -291,7 +311,7 @@ async function leverageHandler(
   _context: HandlerContext
 ): Promise<HandlerResult> {
   const env = getHyperliquidConfig();
-  if (!env) return errorResult('Set HYPERLIQUID_WALLET and HYPERLIQUID_PRIVATE_KEY');
+  if (!env) return errorResult('Hyperliquid not configured — set HYPERLIQUID_AGENT_KEY and HYPERLIQUID_VAULT_ADDRESS and HYPERLIQUID_PRIVATE_KEY');
   const coin = toolInput.coin as string;
   const leverage = toolInput.leverage as number;
   const isCross = (toolInput.is_cross as boolean) ?? true;
