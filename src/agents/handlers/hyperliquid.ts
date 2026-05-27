@@ -183,17 +183,20 @@ async function longHandler(
       size,
       type: 'MARKET',
     });
-    // Log trade to DB
-    context.db.logHyperliquidTrade({
-      userId: env.wallet.slice(0, 16),
-      orderId: String(result.orderId || Date.now()),
-      coin,
-      side: 'BUY',
-      size,
-      price: 0,
-      leverage,
-      timestamp: new Date(),
-    });
+
+// Log trade to DB (skip on dry-run)
+    if (!result.dryRun) {
+      context.db.logHyperliquidTrade({
+        userId: env.wallet.slice(0, 16),
+        orderId: String(result.orderId || Date.now()),
+        coin,
+        side: 'BUY',
+        size,
+        price: 0,
+        leverage,
+        timestamp: new Date(),
+      });
+    }
     return JSON.stringify(result);
   } catch (err: unknown) {
     return JSON.stringify({ error: (err as Error).message });
@@ -219,17 +222,20 @@ async function shortHandler(
       size,
       type: 'MARKET',
     });
-    // Log trade to DB
-    context.db.logHyperliquidTrade({
-      userId: env.wallet.slice(0, 16),
-      orderId: String(result.orderId || Date.now()),
-      coin,
-      side: 'SELL',
-      size,
-      price: 0,
-      leverage,
-      timestamp: new Date(),
-    });
+
+// Log trade to DB (skip on dry-run)
+    if (!result.dryRun) {
+      context.db.logHyperliquidTrade({
+        userId: env.wallet.slice(0, 16),
+        orderId: String(result.orderId || Date.now()),
+        coin,
+        side: 'SELL',
+        size,
+        price: 0,
+        leverage,
+        timestamp: new Date(),
+      });
+    }
     return JSON.stringify(result);
   } catch (err: unknown) {
     return JSON.stringify({ error: (err as Error).message });
@@ -259,16 +265,19 @@ async function closeHandler(
       type: 'MARKET',
       reduceOnly: true,
     });
-    // Log trade to DB
-    context.db.logHyperliquidTrade({
-      userId: env.wallet.slice(0, 16),
-      orderId: String(result.orderId || Date.now()),
-      coin,
-      side: side as 'BUY' | 'SELL',
-      size,
-      price: 0,
-      timestamp: new Date(),
-    });
+
+// Log trade to DB (skip on dry-run)
+    if (!result.dryRun) {
+      context.db.logHyperliquidTrade({
+        userId: env.wallet.slice(0, 16),
+        orderId: String(result.orderId || Date.now()),
+        coin,
+        side: side as 'BUY' | 'SELL',
+        size,
+        price: 0,
+        timestamp: new Date(),
+      });
+    }
     return JSON.stringify(result);
   } catch (err: unknown) {
     return JSON.stringify({ error: (err as Error).message });

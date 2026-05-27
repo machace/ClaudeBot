@@ -148,7 +148,10 @@ export interface UserFills {
 export interface OrderResult {
   success: boolean;
   orderId?: number;
+  twapId?: string;
   error?: string;
+  dryRun?: boolean;
+  message?: string;
 }
 
 // =============================================================================
@@ -849,7 +852,7 @@ export async function placePerpOrder(
 ): Promise<OrderResult> {
   if (config.dryRun) {
     logger.info({ order }, '[DRY RUN] Would place Hyperliquid perp order');
-    return { success: true, orderId: Date.now() };
+    return { success: true, orderId: Date.now() , dryRun: true, message: "DRY RUN — simulated, no actual operation performed" };
   }
 
   try {
@@ -904,7 +907,7 @@ export async function placeSpotOrder(
 ): Promise<OrderResult> {
   if (config.dryRun) {
     logger.info({ order }, '[DRY RUN] Would place Hyperliquid spot order');
-    return { success: true, orderId: Date.now() };
+    return { success: true, orderId: Date.now() , dryRun: true, message: "DRY RUN — simulated, no actual operation performed" };
   }
 
   try {
@@ -948,10 +951,10 @@ export async function cancelOrder(
   config: HyperliquidConfig,
   coin: string,
   oid: number
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; dryRun?: boolean; message?: string }> {
   if (config.dryRun) {
     logger.info({ coin, oid }, '[DRY RUN] Would cancel order');
-    return { success: true };
+    return { success: true , dryRun: true, message: "DRY RUN — simulated, no actual operation performed" };
   }
 
   try {
@@ -971,10 +974,10 @@ export async function cancelOrderByCloid(
   config: HyperliquidConfig,
   coin: string,
   cloid: string
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; dryRun?: boolean; message?: string }> {
   if (config.dryRun) {
     logger.info({ coin, cloid }, '[DRY RUN] Would cancel order by cloid');
-    return { success: true };
+    return { success: true , dryRun: true, message: "DRY RUN — simulated, no actual operation performed" };
   }
 
   try {
@@ -997,7 +1000,7 @@ export async function modifyOrder(
 ): Promise<OrderResult> {
   if (config.dryRun) {
     logger.info({ oid, order }, '[DRY RUN] Would modify order');
-    return { success: true, orderId: oid };
+    return { success: true, orderId: oid , dryRun: true, message: "DRY RUN — simulated, no actual operation performed" };
   }
 
   try {
@@ -1025,10 +1028,10 @@ export async function modifyOrder(
 export async function batchModifyOrders(
   config: HyperliquidConfig,
   modifications: Array<{ oid: number; order: PerpOrder }>
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; dryRun?: boolean; message?: string }> {
   if (config.dryRun) {
     logger.info({ count: modifications.length }, '[DRY RUN] Would batch modify orders');
-    return { success: true };
+    return { success: true , dryRun: true, message: "DRY RUN — simulated, no actual operation performed" };
   }
 
   try {
@@ -1062,10 +1065,10 @@ export async function batchModifyOrders(
 export async function cancelAllOrders(
   config: HyperliquidConfig,
   coin?: string
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; dryRun?: boolean; message?: string }> {
   if (config.dryRun) {
     logger.info({ coin }, '[DRY RUN] Would cancel all orders');
-    return { success: true };
+    return { success: true , dryRun: true, message: "DRY RUN — simulated, no actual operation performed" };
   }
 
   try {
@@ -1093,10 +1096,10 @@ export async function updateLeverage(
   coin: string,
   leverage: number,
   isCross: boolean = true
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; dryRun?: boolean; message?: string }> {
   if (config.dryRun) {
     logger.info({ coin, leverage, isCross }, '[DRY RUN] Would update leverage');
-    return { success: true };
+    return { success: true , dryRun: true, message: "DRY RUN — simulated, no actual operation performed" };
   }
 
   try {
@@ -1118,10 +1121,10 @@ export async function updateIsolatedMargin(
   coin: string,
   isBuy: boolean,
   ntli: number
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; dryRun?: boolean; message?: string }> {
   if (config.dryRun) {
     logger.info({ coin, isBuy, ntli }, '[DRY RUN] Would update isolated margin');
-    return { success: true };
+    return { success: true , dryRun: true, message: "DRY RUN — simulated, no actual operation performed" };
   }
 
   try {
@@ -1141,10 +1144,10 @@ export async function updateIsolatedMargin(
 export async function scheduleCancel(
   config: HyperliquidConfig,
   time?: number
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; dryRun?: boolean; message?: string }> {
   if (config.dryRun) {
     logger.info({ time }, '[DRY RUN] Would schedule cancel');
-    return { success: true };
+    return { success: true , dryRun: true, message: "DRY RUN — simulated, no actual operation performed" };
   }
 
   try {
@@ -1164,10 +1167,10 @@ export async function transferBetweenSpotAndPerp(
   config: HyperliquidConfig,
   amount: number,
   toPerp: boolean
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; dryRun?: boolean; message?: string }> {
   if (config.dryRun) {
     logger.info({ amount, toPerp }, '[DRY RUN] Would transfer');
-    return { success: true };
+    return { success: true , dryRun: true, message: "DRY RUN — simulated, no actual operation performed" };
   }
 
   try {
@@ -1186,10 +1189,10 @@ export async function transferBetweenSpotAndPerp(
 export async function depositToHlp(
   config: HyperliquidConfig,
   amount: number
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; dryRun?: boolean; message?: string }> {
   if (config.dryRun) {
     logger.info({ amount }, '[DRY RUN] Would deposit to HLP');
-    return { success: true };
+    return { success: true , dryRun: true, message: "DRY RUN — simulated, no actual operation performed" };
   }
 
   try {
@@ -1208,10 +1211,10 @@ export async function depositToHlp(
 export async function withdrawFromHlp(
   config: HyperliquidConfig,
   amount: number
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; dryRun?: boolean; message?: string }> {
   if (config.dryRun) {
     logger.info({ amount }, '[DRY RUN] Would withdraw from HLP');
-    return { success: true };
+    return { success: true , dryRun: true, message: "DRY RUN — simulated, no actual operation performed" };
   }
 
   try {
@@ -1230,10 +1233,10 @@ export async function withdrawFromHlp(
 export async function placeTwapOrder(
   config: HyperliquidConfig,
   order: TwapOrder
-): Promise<{ success: boolean; twapId?: string; error?: string }> {
+): Promise<{ success: boolean; twapId?: string; error?: string; dryRun?: boolean; message?: string }> {
   if (config.dryRun) {
     logger.info({ order }, '[DRY RUN] Would place TWAP order');
-    return { success: true, twapId: `twap-${Date.now()}` };
+    return { success: true, twapId: `twap-${Date.now()}` , dryRun: true, message: "DRY RUN — simulated, no actual operation performed" };
   }
 
   try {
@@ -1262,7 +1265,7 @@ export async function cancelTwap(
   config: HyperliquidConfig,
   coin: string,
   twapId: string
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; dryRun?: boolean; message?: string }> {
   if (config.dryRun) {
     return { success: true };
   }
@@ -1286,10 +1289,10 @@ export async function usdTransfer(
   config: HyperliquidConfig,
   destination: string,
   amount: number
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; dryRun?: boolean; message?: string }> {
   if (config.dryRun) {
     logger.info({ destination, amount }, '[DRY RUN] Would transfer USD');
-    return { success: true };
+    return { success: true , dryRun: true, message: "DRY RUN — simulated, no actual operation performed" };
   }
 
   try {
@@ -1310,10 +1313,10 @@ export async function spotTransfer(
   destination: string,
   token: string,
   amount: string
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; dryRun?: boolean; message?: string }> {
   if (config.dryRun) {
     logger.info({ destination, token, amount }, '[DRY RUN] Would transfer spot');
-    return { success: true };
+    return { success: true , dryRun: true, message: "DRY RUN — simulated, no actual operation performed" };
   }
 
   try {
@@ -1333,10 +1336,10 @@ export async function withdrawToL1(
   config: HyperliquidConfig,
   destination: string,
   amount: number
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; dryRun?: boolean; message?: string }> {
   if (config.dryRun) {
     logger.info({ destination, amount }, '[DRY RUN] Would withdraw to L1');
-    return { success: true };
+    return { success: true , dryRun: true, message: "DRY RUN — simulated, no actual operation performed" };
   }
 
   try {
@@ -1356,10 +1359,10 @@ export async function approveAgent(
   config: HyperliquidConfig,
   agentAddress: string,
   agentName?: string
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; dryRun?: boolean; message?: string }> {
   if (config.dryRun) {
     logger.info({ agentAddress, agentName }, '[DRY RUN] Would approve agent');
-    return { success: true };
+    return { success: true , dryRun: true, message: "DRY RUN — simulated, no actual operation performed" };
   }
 
   try {
@@ -1379,10 +1382,10 @@ export async function approveBuilderFee(
   config: HyperliquidConfig,
   builder: string,
   maxFeeRate: string
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; dryRun?: boolean; message?: string }> {
   if (config.dryRun) {
     logger.info({ builder, maxFeeRate }, '[DRY RUN] Would approve builder fee');
-    return { success: true };
+    return { success: true , dryRun: true, message: "DRY RUN — simulated, no actual operation performed" };
   }
 
   try {
@@ -1401,10 +1404,10 @@ export async function approveBuilderFee(
 export async function setReferrer(
   config: HyperliquidConfig,
   code: string
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; dryRun?: boolean; message?: string }> {
   if (config.dryRun) {
     logger.info({ code }, '[DRY RUN] Would set referrer');
-    return { success: true };
+    return { success: true , dryRun: true, message: "DRY RUN — simulated, no actual operation performed" };
   }
 
   try {
@@ -1423,10 +1426,10 @@ export async function setReferrer(
 export async function createSubAccount(
   config: HyperliquidConfig,
   name: string
-): Promise<{ success: boolean; subAccountUser?: string; error?: string }> {
+): Promise<{ success: boolean; subAccountUser?: string; error?: string; dryRun?: boolean; message?: string }> {
   if (config.dryRun) {
     logger.info({ name }, '[DRY RUN] Would create subaccount');
-    return { success: true };
+    return { success: true , dryRun: true, message: "DRY RUN — simulated, no actual operation performed" };
   }
 
   try {
@@ -1445,10 +1448,10 @@ export async function createSubAccount(
  */
 export async function claimRewards(
   config: HyperliquidConfig
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; error?: string; dryRun?: boolean; message?: string }> {
   if (config.dryRun) {
     logger.info('[DRY RUN] Would claim rewards');
-    return { success: true };
+    return { success: true , dryRun: true, message: "DRY RUN — simulated, no actual operation performed" };
   }
 
   try {
