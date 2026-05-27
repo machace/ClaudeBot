@@ -1442,7 +1442,7 @@ export function createMigrationRunner(db: Database): MigrationRunner {
 
       logger.info({ version: migration.version }, 'Migration applied');
     } catch (error) {
-      logger.error({ error, version: migration.version }, 'Migration failed');
+      logger.error({ error: String(error), stack: (error as Error)?.stack, version: migration.version }, 'Migration failed');
       throw error;
     }
   }
