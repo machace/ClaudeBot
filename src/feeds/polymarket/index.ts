@@ -454,14 +454,18 @@ export async function createPolymarketFeed(): Promise<PolymarketFeed> {
       if (!res.ok) return [];
 
       const data = (await res.json()) as PolymarketMarket[];
-      return data.map(convertMarket);
+      return data.map(convertMarket).filter((m): m is Market => m !== null);
     } catch (err) {
       logger.error({ err, query }, 'Failed to search markets');
       return [];
     }
   }
 
-  function convertMarket(data: PolymarketMarket): Market {
+  function convertMarket(data: PolymarketMarket): Market | null {
+    if (!data?.tokens || !Array.isArray(data.tokens)) {
+      logger.debug({ marketId: data?.condition_id, slug: data?.slug }, 'Skipping Polymarket market without tokens');
+      return null;
+    }
     return {
       id: data.condition_id,
       platform: 'polymarket' as Platform,
