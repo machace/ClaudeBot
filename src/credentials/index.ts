@@ -32,6 +32,37 @@ import {
 import { Database } from '../db/index.js';
 import { logger } from '../utils/logger.js';
 
+function getEnvConfiguredPlatforms(): Platform[] {
+  const platforms: Platform[] = [];
+  if (buildHyperliquidEnvCredentials()) platforms.push('hyperliquid' as Platform);
+  return platforms;
+}
+
+// Build Hyperliquid credentials from env vars if set. Agent-mode preferred,
+// legacy main-wallet mode as fallback. Returns null if neither is configured.
+function buildHyperliquidEnvCredentials(): HyperliquidCredentials | null {
+  const agentKey = process.env.HYPERLIQUID_AGENT_KEY;
+  const vault = process.env.HYPERLIQUID_VAULT_ADDRESS;
+  if (agentKey && vault) {
+    return {
+      privateKey: agentKey,
+      walletAddress: vault,
+      vaultAddress: vault,
+      testnet: process.env.HYPERLIQUID_NETWORK === 'testnet',
+    };
+  }
+  const legacyKey = process.env.HYPERLIQUID_PRIVATE_KEY;
+  const legacyWallet = process.env.HYPERLIQUID_WALLET;
+  if (legacyKey && legacyWallet) {
+    return {
+      privateKey: legacyKey,
+      walletAddress: legacyWallet,
+      testnet: process.env.HYPERLIQUID_NETWORK === 'testnet',
+    };
+  }
+  return null;
+}
+
 // Encryption key from environment (lazy — read at call time so startup can auto-generate)
 function getEncryptionKey(): string | undefined {
   return process.env.CLODDS_CREDENTIAL_KEY;
@@ -211,7 +242,14 @@ export function createCredentialsManager(db: Database): CredentialsManager {
 
     async getCredentials<T>(userId: string, platform: Platform): Promise<T | null> {
       const creds = db.getTradingCredentials(userId, platform);
-      if (!creds || !creds.enabled) return null;
+      if (!creds || !creds.enabled) {
+        // Env-var fallback: synthesize creds from env if no DB row exists
+        if (platform === 'hyperliquid') {
+          const envCreds = buildHyperliquidEnvCredentials();
+          if (envCreds) return envCreds as T;
+        }
+        return null;
+      }
 
       // Check cooldown
       if (creds.cooldownUntil && new Date() < creds.cooldownUntil) {
@@ -251,7 +289,12 @@ export function createCredentialsManager(db: Database): CredentialsManager {
 
     async hasCredentials(userId, platform) {
       const creds = db.getTradingCredentials(userId, platform);
-      return creds !== null && creds.enabled;
+      if (creds !== null && creds.enabled) return true;
+      // Env-var fallback
+      if (platform === 'hyperliquid') {
+        return buildHyperliquidEnvCredentials() !== null;
+      }
+      return false;
     },
 
     async deleteCredentials(userId, platform) {
@@ -336,7 +379,9 @@ export function createCredentialsManager(db: Database): CredentialsManager {
     },
 
     async listUserPlatforms(userId) {
-      return db.listUserTradingPlatforms(userId);
+      const dbPlatforms = db.listUserTradingPlatforms(userId);
+      const envPlatforms = getEnvConfiguredPlatforms();
+      return Array.from(new Set([...dbPlatforms, ...envPlatforms]));
     },
   };
 }
