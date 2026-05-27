@@ -57,6 +57,7 @@ export function getConfig(): hl.HyperliquidConfig | null {
       walletAddress: vaultAddress,
       privateKey: agentKey,
       vaultAddress,
+      testnet: process.env.HYPERLIQUID_NETWORK === 'testnet',
       dryRun: process.env.DRY_RUN === 'true',
     };
   }
@@ -69,6 +70,7 @@ export function getConfig(): hl.HyperliquidConfig | null {
     return {
       walletAddress: wallet,
       privateKey,
+      testnet: process.env.HYPERLIQUID_NETWORK === 'testnet',
       dryRun: process.env.DRY_RUN === 'true',
     };
   }

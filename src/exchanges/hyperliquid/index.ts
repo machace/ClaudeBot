@@ -15,8 +15,12 @@ import { logger } from '../../utils/logger';
 // CONSTANTS
 // =============================================================================
 
-const API_URL = 'https://api.hyperliquid.xyz';
-const WS_URL = 'wss://api.hyperliquid.xyz/ws';
+const API_URL = process.env.HYPERLIQUID_NETWORK === 'testnet'
+  ? 'https://api.hyperliquid-testnet.xyz'
+  : 'https://api.hyperliquid.xyz';
+const WS_URL = process.env.HYPERLIQUID_NETWORK === 'testnet'
+  ? 'wss://api.hyperliquid-testnet.xyz/ws'
+  : 'wss://api.hyperliquid.xyz/ws';
 const HLP_VAULT = '0x010461C14e146ac35fE42271BDC1134EE31C703B';
 
 // =============================================================================
