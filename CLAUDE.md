@@ -24,6 +24,8 @@ equity_peak.json persistence and an empty CLAUDE.md).
 - Network: mainnet (bot reads real market data every cycle; DRY_RUN is the
   only safety wheel)
 - Equity: ~$26 (small testing balance)
+- DECIDE_MODEL=claude-opus-4-8 (set 2026-05-28 20:38Z). Diary entries before
+  that timestamp are Opus 4.7; from 20:38:25Z onward are 4.8.
 - Position ceilings, tightened to match small equity:
   - HYPERLIQUID_MAX_LEVERAGE=2
   - HYPERLIQUID_MAX_POSITION_USD=12
@@ -40,20 +42,38 @@ equity_peak.json persistence and an empty CLAUDE.md).
   net BTC-beta exposure, drawdown from persisted peak (data/equity_peak.json),
   total open risk (=0 until execution wired). Most rules can't fire
   without an open book; only size guidance is testable today.
-- Tier 3 (not built): Hurst regime, liquidity sweeps, BB squeeze.
-  All optional, experimental. Earn-their-place rule applies.
+- Tier 3 Build 1 (liquidity sweeps): landed, mechanically verified. Per-asset
+  SwH/SwL/-- flag, 25%-overshoot retrace guard, whipsaw returns null. Builds 2
+  (Hurst regime) and 3 (BB squeeze) not yet built.
 
 ## Open findings
-- size_usd anchors at $5 across cycles. Prompt guidance didn't move it.
-  NEXT SESSION'S FIRST TASK: compute a deterministic size cap in code
-  from ATR + confidence + equity, log it, pass it to the LLM as a
-  bounded constraint rather than asking the model to pick a number.
-  Same architectural pattern as the hard ceilings.
-- Entry-thesis-on-open-positions input was parked from Tier 2 because
-  it's untestable in log-only mode. Build it when execution goes live.
-- totalOpenRisk reads $0 in log-only because stop prices live as
-  trigger orders on Hyperliquid, not in the Position struct. Wire to
-  real value when execution goes live.
+- Tier 2 entry-thesis-on-open-positions feed: parked until execution
+  goes live. Depends on holding real positions.
+- Tier 2 totalOpenRisk reads $0 in log-only because stop prices live
+  on Hyperliquid as trigger orders, not in the Position struct. Wires
+  to real value when execution goes live.
+- Size anchoring (was: open) — RESOLVED. Root cause was a toFixed(0)
+  rounding artifact in the prompt, not a model defect. Caps now
+  rendered to 2dp; at $26 equity the position-pct ceiling binds all
+  confidence tiers to $5.28. Spread between tiers will appear at
+  higher equity.
+- sweep_influenced diary flag under-counts (regex /sweep/i misses 'SwH'-style
+  citations); trust per-asset sweep state instead. OPEN QUESTION: do sweeps
+  ever actually change a decision outcome, or are they logged-but-inert?
+  Cannot answer in log-only mode — watch over many cycles / closed trades.
+  Tier 3 as a whole is unvalidated: built under override, mechanically working,
+  decision-quality impact unknown until closed trades exist.
+
+## Next session decision
+Two paths, decide deliberately:
+  A. Move toward execution (testnet first, small $ on mainnet).
+     This unlocks verification of Tier 2's diversification, open-risk,
+     and drawdown rules, which cannot fire with an empty book.
+  B. Build Tier 3 experimental signals (Hurst, liquidity sweeps,
+     BB squeeze). Optional, earn-their-place. Adds signal but does
+     not attack a measured defect.
+Path A has higher information value. Path B is comfortable but
+deferred work. Choose at session start.
 
 ## Project doc reference
 The full project brief, operating principles, capital ramp, cadence,
