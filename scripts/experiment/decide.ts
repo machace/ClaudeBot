@@ -8,8 +8,13 @@
  */
 import * as dotenv from 'dotenv';
 import * as fs from 'fs';
+import * as path from 'path';
 import Anthropic from '@anthropic-ai/sdk';
 import { Hyperliquid } from 'hyperliquid';
+import {
+  computeTier1, formatTier1Block, type Tier1Signals,
+  computeTier2, formatTier2Block, type Tier2Signals, type PositionForTier2,
+} from './signals';
 
 dotenv.config({ path: '/home/kaan/clodds/.env' });
 
@@ -24,7 +29,9 @@ const MAX_CONCURRENT = parseInt(process.env.HYPERLIQUID_MAX_CONCURRENT_POSITIONS
 const TESTNET = process.env.HYPERLIQUID_NETWORK === 'testnet';
 const API_URL = TESTNET ? 'https://api.hyperliquid-testnet.xyz' : 'https://api.hyperliquid.xyz';
 
-const DIARY_PATH = '/home/kaan/clodds/data/decisions.jsonl';
+const DATA_DIR        = path.join(__dirname, '../../data');
+const DIARY_PATH      = path.join(DATA_DIR, 'decisions.jsonl');
+const EQUITY_PEAK_PATH = path.join(DATA_DIR, 'equity_peak.json');
 const ANTHROPIC_MODEL = process.env.DECIDE_MODEL || 'claude-opus-4-7';
 
 const log = (level: string, msg: string, data?: object) =>
@@ -107,6 +114,20 @@ function appendDiary(entry: object) {
   fs.appendFileSync(DIARY_PATH, JSON.stringify(entry) + '\n');
 }
 
+function readEquityPeak(currentEquity: number): number {
+  try {
+    if (fs.existsSync(EQUITY_PEAK_PATH)) {
+      const data = JSON.parse(fs.readFileSync(EQUITY_PEAK_PATH, 'utf8'));
+      return typeof data.peakEquity === 'number' ? data.peakEquity : currentEquity;
+    }
+  } catch { /* first run — treat current equity as peak */ }
+  return currentEquity;
+}
+
+function writeEquityPeak(peak: number) {
+  fs.writeFileSync(EQUITY_PEAK_PATH, JSON.stringify({ peakEquity: peak }));
+}
+
 const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const TG_CHAT = process.env.TELEGRAM_CHAT_ID || '';
 
@@ -187,7 +208,7 @@ async function gatherContext(vaultAddress: string): Promise<MarketContext> {
 }
 
 // ── PROMPT ──────────────────────────────────────────────────────────────────
-function buildPrompt(ctx: MarketContext): string {
+function buildPrompt(ctx: MarketContext, tier1: Tier1Signals, tier2: Tier2Signals): string {
   const equityRef = ctx.equity || 1000; // self-calibrating
 
   return `You are an autonomous trader managing a perpetual-futures account on Hyperliquid (${ctx.network}).
@@ -213,6 +234,21 @@ ${a.coin} — mid: $${a.midPrice.toFixed(2)}
   4h (last 5): ${a.candles4h.slice(-5).map(c => `O${c.o.toFixed(2)} H${c.h.toFixed(2)} L${c.l.toFixed(2)} C${c.c.toFixed(2)}`).join(' | ')}
   1d (last 5): ${a.candles1d.slice(-5).map(c => `O${c.o.toFixed(2)} H${c.h.toFixed(2)} L${c.l.toFixed(2)} C${c.c.toFixed(2)}`).join(' | ')}
 `).join('\n')}
+
+${formatTier1Block(tier1)}
+
+${formatTier2Block(tier2)}
+
+SIZING & CONVICTION RULES (applied before each decision)
+- Asset selection: trade by RS rank. For longs, prefer lower-ranked assets (rank 1 = strongest momentum). For shorts, prefer higher-ranked assets (rank 8 = weakest momentum). Ranks 4–5 are borderline — require a clear signal.
+- Leverage: 2–3× only when ATR% ≤ 2% AND MTF is ALIGNED (either direction). Cap at 1–2× when ATR% > 3%. Rule applies equally to longs and shorts.
+- Size: scale notional inversely with ATR%. A 1%-ATR asset may take full allowed size; a 4%-ATR asset ~¼ of that.
+- Confidence "high": ALIGNED_UP (long) or ALIGNED_DOWN (short). "medium": 2/3 timeframes agree. "low": 1/3 or fewer.
+- no_action: use only when NO asset clears the bar. An asset clears the bar when it has ALIGNED_UP MTF + positive 7d AND 30d returns (long candidate) OR ALIGNED_DOWN MTF + negative 7d AND 30d returns (short candidate). If even one asset meets either criterion, there is a setup — pick the best qualifying asset and act. Do not output no_action just because most assets are mixed.
+- Correlation doubling: two positions carry effectively the same exposure when they move together in your portfolio — long+long with corr > 0.7, OR long+short with corr < −0.7 (opposite direction on an inversely-correlated pair is still one concentrated bet, because both move against you in the same scenario). If either condition holds against any existing position, treat the pair as a single concentrated bet. Require unusually strong conviction (high + ALIGNED MTF + aligned 7d/30d returns + RS rank 1–2) or reduce size by at least half.
+- Open risk cap: total open risk (Tier 2 "Open risk" line) must stay well under 10% of equity. If this trade would push it over that threshold, reduce size proportionally or use no_action.
+- Drawdown throttle: if drawdown from peak equity exceeds 15%, cap ALL new position sizes at half of what you would otherwise choose. State this throttle explicitly in your reasoning field whenever it applies. The throttle lifts when equity recovers to within 5% of peak.
+- Size guidance: size_usd should reflect conviction AND ATR. High-confidence, low-ATR setups warrant larger size (toward the position cap). Low-confidence or high-ATR setups warrant smaller size (toward the floor). $5 is a floor, not a default — only use it when conviction is genuinely low or the setup is marginal.
 
 YOUR DECISION LOG (last 10)
 
@@ -251,7 +287,7 @@ Critical rules:
 - size_usd is the NOTIONAL value (size × price), NOT the margin. Stay under $${Math.min(MAX_POSITION_USD, equityRef * MAX_POSITION_PCT / 100).toFixed(0)}.
 - Don't open if you already have ${MAX_CONCURRENT} positions.
 - Don't open if available margin < ${MIN_RESERVE_PCT}% of equity.
-- "no_action" is a valid choice. Don't trade unless there's a real setup.`;
+- "no_action" only when no asset clears the bar — see SIZING & CONVICTION RULES above.`;
 }
 
 // ── ANTHROPIC ───────────────────────────────────────────────────────────────
@@ -425,7 +461,12 @@ async function main() {
     equity: ctx.equity, positions: ctx.positions.length, assetsFetched: ctx.assets.length,
   });
 
-  const prompt = buildPrompt(ctx);
+  const tier1 = computeTier1(ctx.assets);
+  const storedPeak = readEquityPeak(ctx.equity);
+  const peakEquity = Math.max(storedPeak, ctx.equity);
+  if (!fs.existsSync(EQUITY_PEAK_PATH) || peakEquity > storedPeak) writeEquityPeak(peakEquity);
+  const tier2 = computeTier2(ctx.assets, ctx.positions, ctx.equity, peakEquity);
+  const prompt = buildPrompt(ctx, tier1, tier2);
   const { decision, raw, usage } = await askLLM(prompt);
   log('info', 'LLM responded', { usage, decision_type: decision.decision_type });
 
@@ -445,6 +486,8 @@ async function main() {
     equity: ctx.equity,
     positions_before: ctx.positions,
     decision,
+    tier1_signals: tier1,
+    tier2_signals: tier2,
     validation,
     llm_usage: usage,
     executed: execution?.attempted ?? false,
