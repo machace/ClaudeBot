@@ -107,6 +107,37 @@ function appendDiary(entry: object) {
   fs.appendFileSync(DIARY_PATH, JSON.stringify(entry) + '\n');
 }
 
+const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+const TG_CHAT = process.env.TELEGRAM_CHAT_ID || '';
+
+async function notifyTelegram(text: string) {
+  if (!TG_TOKEN || !TG_CHAT) return;
+  try {
+    await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: TG_CHAT, text, disable_web_page_preview: true }),
+    });
+  } catch (e: any) {
+    log('warn', 'telegram notify failed', { error: e.message });
+  }
+}
+
+function formatDecisionMsg(d: Decision, ctx: MarketContext, execution: any): string {
+  const net = ctx.network.toUpperCase();
+  if (d.decision_type === 'no_action') {
+    return `🤖 DECIDE — ${net}\nno_action | conf: ${d.confidence}\n"${(d.reasoning || '').slice(0, 200)}"\nequity: $${ctx.equity.toFixed(2)}`;
+  }
+  if (d.decision_type === 'open_new') {
+    const tps = (d.take_profit_levels || []).map(t => `+${t.gain_pct}%`).join('/');
+    const execNote = execution?.abortedToFlat ? '\n⚠️ ABORTED TO FLAT (stop failed)' : execution?.error ? `\n⚠️ ${execution.error}` : '';
+    const fill = execution?.fillPrice ? ` @ $${execution.fillPrice}` : '';
+    return `🤖 DECIDE — ${net}\nOPEN ${d.asset} ${d.side} | $${d.size_usd} @ ${d.leverage}x${fill}\nSL: -${d.stop_loss_pct}% | TP: ${tps} | conf: ${d.confidence}\n"${(d.reasoning || '').slice(0, 160)}"\nequity: $${ctx.equity.toFixed(2)}${execNote}`;
+  }
+  return `🤖 DECIDE — ${net}\n${d.decision_type} ${d.asset || ''} | conf: ${d.confidence}\nequity: $${ctx.equity.toFixed(2)}`;
+}
+
+
 // ── CONTEXT GATHERING ───────────────────────────────────────────────────────
 async function gatherContext(vaultAddress: string): Promise<MarketContext> {
   const [state, mids] = await Promise.all([
@@ -428,6 +459,12 @@ async function main() {
     valid: validation.ok,
     reasons: validation.reasons,
   });
+
+try {
+    await notifyTelegram(formatDecisionMsg(decision, ctx, execution));
+  } catch (e: any) {
+    log('warn', 'notify step failed (non-fatal)', { error: e.message });
+  }
 
   console.log('\n=== DECISION ===\n' + JSON.stringify(decision, null, 2));
   console.log('\n=== VALIDATION ===\n' + JSON.stringify(validation, null, 2));
