@@ -304,3 +304,53 @@ export function formatTier1Block(signals: Tier1Signals): string {
   });
   return [header, ...rows].join('\n');
 }
+
+// ── SIZE CAP TYPES ────────────────────────────────────────────────────────────
+
+export interface AssetSizeCap {
+  coin:    string;
+  capLow:  number;  // $ notional, confidence=low
+  capMed:  number;  // $ notional, confidence=medium
+  capHigh: number;  // $ notional, confidence=high
+}
+
+const CONFIDENCE_FACTORS = { low: 0.012, medium: 0.025, high: 0.040 } as const;
+const SIZE_FLOOR = 5.0;
+
+/**
+ * Deterministic per-asset size caps.
+ * raw = equity × factor / (atrPct / 100), clamped to [SIZE_FLOOR, effectiveCeiling].
+ * effectiveCeiling = min(maxPositionUsd, equity × maxPositionPct / 100).
+ * Leverage is intentionally excluded: notional risk (size × ATR%) is independent of leverage.
+ */
+export function computeSizeCaps(
+  tier1Assets: AssetTier1[],
+  equity: number,
+  maxPositionUsd: number,
+  maxPositionPct: number,
+): AssetSizeCap[] {
+  const ceiling = Math.min(maxPositionUsd, equity * maxPositionPct / 100);
+  return tier1Assets.map(a => {
+    const capFor = (factor: number): number => {
+      if (a.atrPct <= 0) return SIZE_FLOOR;
+      const raw = equity * factor / (a.atrPct / 100);
+      return Math.round(Math.max(SIZE_FLOOR, Math.min(raw, ceiling)) * 100) / 100;
+    };
+    return {
+      coin:    a.coin,
+      capLow:  capFor(CONFIDENCE_FACTORS.low),
+      capMed:  capFor(CONFIDENCE_FACTORS.medium),
+      capHigh: capFor(CONFIDENCE_FACTORS.high),
+    };
+  });
+}
+
+export function formatSizeCapsBlock(caps: AssetSizeCap[]): string {
+  const rows = caps.map(c =>
+    `  ${c.coin.padEnd(7)} high: $${c.capHigh.toFixed(2)}  med: $${c.capMed.toFixed(2)}  low: $${c.capLow.toFixed(2)}`
+  );
+  return [
+    'SIZING CAPS (equity × confidenceFactor / ATR%, clamped to hard ceilings)',
+    ...rows,
+  ].join('\n');
+}

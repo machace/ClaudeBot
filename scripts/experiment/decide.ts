@@ -14,6 +14,7 @@ import { Hyperliquid } from 'hyperliquid';
 import {
   computeTier1, formatTier1Block, type Tier1Signals,
   computeTier2, formatTier2Block, type Tier2Signals, type PositionForTier2,
+  computeSizeCaps, formatSizeCapsBlock, type AssetSizeCap,
 } from './signals';
 
 dotenv.config({ path: '/home/kaan/clodds/.env' });
@@ -208,7 +209,7 @@ async function gatherContext(vaultAddress: string): Promise<MarketContext> {
 }
 
 // ── PROMPT ──────────────────────────────────────────────────────────────────
-function buildPrompt(ctx: MarketContext, tier1: Tier1Signals, tier2: Tier2Signals): string {
+function buildPrompt(ctx: MarketContext, tier1: Tier1Signals, tier2: Tier2Signals, sizeCaps: AssetSizeCap[]): string {
   const equityRef = ctx.equity || 1000; // self-calibrating
 
   return `You are an autonomous trader managing a perpetual-futures account on Hyperliquid (${ctx.network}).
@@ -239,16 +240,17 @@ ${formatTier1Block(tier1)}
 
 ${formatTier2Block(tier2)}
 
+${formatSizeCapsBlock(sizeCaps)}
+
 SIZING & CONVICTION RULES (applied before each decision)
 - Asset selection: trade by RS rank. For longs, prefer lower-ranked assets (rank 1 = strongest momentum). For shorts, prefer higher-ranked assets (rank 8 = weakest momentum). Ranks 4–5 are borderline — require a clear signal.
 - Leverage: 2–3× only when ATR% ≤ 2% AND MTF is ALIGNED (either direction). Cap at 1–2× when ATR% > 3%. Rule applies equally to longs and shorts.
-- Size: scale notional inversely with ATR%. A 1%-ATR asset may take full allowed size; a 4%-ATR asset ~¼ of that.
 - Confidence "high": ALIGNED_UP (long) or ALIGNED_DOWN (short). "medium": 2/3 timeframes agree. "low": 1/3 or fewer.
 - no_action: use only when NO asset clears the bar. An asset clears the bar when it has ALIGNED_UP MTF + positive 7d AND 30d returns (long candidate) OR ALIGNED_DOWN MTF + negative 7d AND 30d returns (short candidate). If even one asset meets either criterion, there is a setup — pick the best qualifying asset and act. Do not output no_action just because most assets are mixed.
 - Correlation doubling: two positions carry effectively the same exposure when they move together in your portfolio — long+long with corr > 0.7, OR long+short with corr < −0.7 (opposite direction on an inversely-correlated pair is still one concentrated bet, because both move against you in the same scenario). If either condition holds against any existing position, treat the pair as a single concentrated bet. Require unusually strong conviction (high + ALIGNED MTF + aligned 7d/30d returns + RS rank 1–2) or reduce size by at least half.
 - Open risk cap: total open risk (Tier 2 "Open risk" line) must stay well under 10% of equity. If this trade would push it over that threshold, reduce size proportionally or use no_action.
 - Drawdown throttle: if drawdown from peak equity exceeds 15%, cap ALL new position sizes at half of what you would otherwise choose. State this throttle explicitly in your reasoning field whenever it applies. The throttle lifts when equity recovers to within 5% of peak.
-- Size guidance: size_usd should reflect conviction AND ATR. High-confidence, low-ATR setups warrant larger size (toward the position cap). Low-confidence or high-ATR setups warrant smaller size (toward the floor). $5 is a floor, not a default — only use it when conviction is genuinely low or the setup is marginal.
+- Size: size_usd must fall between $5 floor and the computed cap for the chosen asset at your selected confidence level. Caps are shown in the SIZING CAPS block above (one row per asset, three columns: high/med/low). Use the full cap for clean high-conviction setups; size below the cap when conviction is reduced. Do not exceed the cap under any circumstances.
 
 YOUR DECISION LOG (last 10)
 
@@ -284,7 +286,7 @@ Take-profit guidance:
 - Example: [{ "gain_pct": 5, "close_fraction": 0.4 }, { "gain_pct": 9, "close_fraction": 0.35 }, { "gain_pct": 15, "close_fraction": 0.25 }]
 
 Critical rules:
-- size_usd is the NOTIONAL value (size × price), NOT the margin. Stay under $${Math.min(MAX_POSITION_USD, equityRef * MAX_POSITION_PCT / 100).toFixed(0)}.
+- size_usd is the NOTIONAL value (size × price), NOT the margin. Stay under $${Math.min(MAX_POSITION_USD, equityRef * MAX_POSITION_PCT / 100).toFixed(2)}.
 - Don't open if you already have ${MAX_CONCURRENT} positions.
 - Don't open if available margin < ${MIN_RESERVE_PCT}% of equity.
 - "no_action" only when no asset clears the bar — see SIZING & CONVICTION RULES above.`;
@@ -462,13 +464,23 @@ async function main() {
   });
 
   const tier1 = computeTier1(ctx.assets);
+  const sizeCaps = computeSizeCaps(tier1.assets, ctx.equity, MAX_POSITION_USD, MAX_POSITION_PCT);
   const storedPeak = readEquityPeak(ctx.equity);
   const peakEquity = Math.max(storedPeak, ctx.equity);
   if (!fs.existsSync(EQUITY_PEAK_PATH) || peakEquity > storedPeak) writeEquityPeak(peakEquity);
   const tier2 = computeTier2(ctx.assets, ctx.positions, ctx.equity, peakEquity);
-  const prompt = buildPrompt(ctx, tier1, tier2);
+  const prompt = buildPrompt(ctx, tier1, tier2, sizeCaps);
   const { decision, raw, usage } = await askLLM(prompt);
   log('info', 'LLM responded', { usage, decision_type: decision.decision_type });
+
+  const appliedSizeCap = (() => {
+    if (decision.decision_type !== 'open_new' || !decision.asset || !decision.confidence) return null;
+    const cap = sizeCaps.find(c => c.coin === decision.asset);
+    if (!cap) return null;
+    return decision.confidence === 'high' ? cap.capHigh
+         : decision.confidence === 'medium' ? cap.capMed
+         : cap.capLow;
+  })();
 
   const validation = validateDecision(decision, ctx);
 
@@ -487,6 +499,8 @@ async function main() {
     positions_before: ctx.positions,
     decision,
     tier1_signals: tier1,
+    size_caps: sizeCaps,
+    applied_size_cap: appliedSizeCap,
     tier2_signals: tier2,
     validation,
     llm_usage: usage,
