@@ -18,6 +18,14 @@ const TESTNET = process.env.HYPERLIQUID_NETWORK === 'testnet';
 const API_URL = TESTNET ? 'https://api.hyperliquid-testnet.xyz' : 'https://api.hyperliquid.xyz';
 const POLL_SECONDS = parseInt(process.env.WATCHDOG_POLL_SECONDS || '30', 10);
 const GRACE_SECONDS = parseInt(process.env.WATCHDOG_GRACE_SECONDS || '90', 10);
+const HEALTHCHECK_URL = process.env.WATCHDOG_HEALTHCHECK_URL || '';
+
+async function ping(fail = false) {
+  if (!HEALTHCHECK_URL) return;
+  try {
+    await fetch(HEALTHCHECK_URL + (fail ? '/fail' : ''), { method: 'GET' });
+  } catch { /* never let a ping failure affect the watchdog */ }
+}
 const DEFAULT_STOP_PCT = parseFloat(process.env.WATCHDOG_DEFAULT_STOP_PCT || '5');
 const DIARY_PATH = '/home/kaan/clodds/data/decisions.jsonl';
 const VAULT = process.env.HYPERLIQUID_VAULT_ADDRESS!;
@@ -124,9 +132,11 @@ async function loop() {
   log('info', 'watchdog started', { network: TESTNET ? 'testnet' : 'mainnet', pollSeconds: POLL_SECONDS, defaultStopPct: DEFAULT_STOP_PCT, dryRun: HL_CONFIG.dryRun });
   while (true) {
     try {
-      await checkOnce();
+    await checkOnce();
+      await ping(false);
     } catch (e: any) {
       log('error', 'watchdog check failed', { error: e.message });
+      await ping(true);
     }
     await new Promise(r => setTimeout(r, POLL_SECONDS * 1000));
   }
