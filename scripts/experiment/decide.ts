@@ -69,7 +69,7 @@ interface Decision {
   size_usd: number | null;
   leverage: number | null;
   stop_loss_pct: number | null;
-  take_profit_pct: number | null;
+  take_profit_levels: Array<{ gain_pct: number; close_fraction: number }> | null;
   confidence: 'low' | 'medium' | 'high';
   reasoning: string;
   market_view: string;
@@ -204,11 +204,17 @@ Respond with EXACTLY this JSON structure, no other text:
   "size_usd": number | null,
   "leverage": number | null,
   "stop_loss_pct": number | null,
-  "take_profit_pct": number | null,
+  "take_profit_levels": [ { "gain_pct": number, "close_fraction": number } ] | null,
   "confidence": "low" | "medium" | "high",
   "reasoning": "2-4 sentences explaining your decision and why this is a swing/trend setup, not a scalp",
   "market_view": "1-2 sentences on the overall market regime right now"
 }
+Take-profit guidance:
+- Provide 1 to 4 take_profit_levels for any open_new.
+- gain_pct is the % price move in your favor that triggers that level (always positive).
+- close_fraction is the fraction of the position to close at that level; the fractions must sum to 1.0 or less. If they sum to less than 1.0, the remainder rides until the stop or a future decision.
+- Space the levels according to volatility: wider gaps for more volatile assets, tighter for calmer ones. You decide how many levels and where.
+- Example: [{ "gain_pct": 5, "close_fraction": 0.4 }, { "gain_pct": 9, "close_fraction": 0.35 }, { "gain_pct": 15, "close_fraction": 0.25 }]
 
 Critical rules:
 - size_usd is the NOTIONAL value (size × price), NOT the margin. Stay under $${Math.min(MAX_POSITION_USD, equityRef * MAX_POSITION_PCT / 100).toFixed(0)}.
@@ -251,12 +257,129 @@ function validateDecision(d: Decision, ctx: MarketContext): { ok: boolean; reaso
     if (ctx.positions.some(p => p.coin === d.asset)) reasons.push(`already have position in ${d.asset}`);
     const newTotal = ctx.positions.reduce((s, p) => s + p.notional, 0) + (d.size_usd || 0);
     if (newTotal > MAX_TOTAL_NOTIONAL_USD) reasons.push(`new total notional ${newTotal} > MAX_TOTAL_NOTIONAL_USD ${MAX_TOTAL_NOTIONAL_USD}`);
+    if (!d.stop_loss_pct || d.stop_loss_pct <= 0) reasons.push('stop_loss_pct missing or invalid');
+    if (!d.take_profit_levels || d.take_profit_levels.length === 0) {
+      reasons.push('take_profit_levels missing');
+    } else {
+      if (d.take_profit_levels.length > 4) reasons.push('more than 4 take_profit_levels');
+      const fracSum = d.take_profit_levels.reduce((s, t) => s + (t.close_fraction || 0), 0);
+      if (fracSum > 1.0001) reasons.push(`close_fraction sum ${fracSum.toFixed(3)} > 1.0`);
+      if (d.take_profit_levels.some(t => !t.gain_pct || t.gain_pct <= 0)) reasons.push('a take_profit level has invalid gain_pct');
+      if (d.take_profit_levels.some(t => !t.close_fraction || t.close_fraction <= 0)) reasons.push('a take_profit level has invalid close_fraction');
+    }
   }
   if (d.decision_type === 'close_existing' || d.decision_type === 'modify_existing') {
     if (!d.asset) reasons.push('asset missing');
     if (!ctx.positions.some(p => p.coin === d.asset)) reasons.push(`no current position in ${d.asset}`);
   }
   return { ok: reasons.length === 0, reasons };
+}
+
+
+// ── EXECUTION ───────────────────────────────────────────────────────────────
+import * as hl from '/home/kaan/clodds/dist/exchanges/hyperliquid/index.js';
+
+interface ExecResult {
+  attempted: boolean;
+  dryRun: boolean;
+  steps: any[];
+  fillPrice?: number;
+  slOrderId?: number;
+  tpOrderIds?: number[];
+  abortedToFlat?: boolean;
+  error?: string;
+}
+
+const HL_CONFIG = {
+  walletAddress: process.env.HYPERLIQUID_VAULT_ADDRESS!,
+  privateKey: process.env.HYPERLIQUID_AGENT_KEY!,
+  testnet: TESTNET,
+  dryRun: process.env.DRY_RUN === 'true',
+};
+
+async function placeStopWithRetry(coin: string, side: 'BUY' | 'SELL', size: number, triggerPx: number, maxTries = 3) {
+  let last: any;
+  for (let i = 1; i <= maxTries; i++) {
+    const r = await hl.placeTriggerOrder(HL_CONFIG, { coin, side, size, triggerPx, tpsl: 'sl', isMarket: true });
+    if (r.success) return { success: true, orderId: r.orderId, tries: i };
+    last = r;
+    log('warn', 'stop placement failed, retrying', { try: i, error: r.error });
+    await new Promise(res => setTimeout(res, 1000));
+  }
+  return { success: false, error: last?.error, tries: maxTries };
+}
+
+async function executeDecision(d: Decision, ctx: MarketContext): Promise<ExecResult> {
+  const result: ExecResult = { attempted: true, dryRun: HL_CONFIG.dryRun, steps: [] };
+
+  if (d.decision_type === 'no_action') {
+    return { attempted: false, dryRun: HL_CONFIG.dryRun, steps: [] };
+  }
+
+  if (d.decision_type === 'open_new') {
+    const coin = d.asset!;
+    const orderSide = d.side === 'long' ? 'BUY' : 'SELL';
+    const closeSide = d.side === 'long' ? 'SELL' : 'BUY';
+    const asset = ctx.assets.find(a => a.coin === coin)!;
+    const px = asset.midPrice;
+    const size = parseFloat((d.size_usd! / px).toFixed(5));
+
+    // 1. Open with leverage
+    const open = await hl.placePerpOrder(HL_CONFIG, { coin, side: orderSide, size, type: 'MARKET', leverage: d.leverage! });
+    result.steps.push({ step: 'open', result: open });
+    if (!open.success) { result.error = `open failed: ${open.error}`; return result; }
+
+    // 2. Determine fill price — real state if live, mid if dry-run
+    let fillPx = px;
+    if (!HL_CONFIG.dryRun) {
+      await new Promise(res => setTimeout(res, 2000));
+      const state = await hlPost({ type: 'clearinghouseState', user: HL_CONFIG.walletAddress });
+      const pos = state.assetPositions.find((p: any) => p.position.coin === coin);
+      if (pos) fillPx = parseFloat(pos.position.entryPx);
+    }
+    result.fillPrice = fillPx;
+
+    // 3. Stop-loss (retry-then-abort)
+    const slPx = d.side === 'long' ? fillPx * (1 - d.stop_loss_pct! / 100) : fillPx * (1 + d.stop_loss_pct! / 100);
+    const sl = await placeStopWithRetry(coin, closeSide, size, slPx);
+    result.steps.push({ step: 'stop_loss', triggerPx: slPx, result: sl });
+    if (!sl.success) {
+      // abort-to-flat: stop could not be placed, close the position
+      log('error', 'stop placement failed after retries — aborting to flat', { coin });
+      const flat = await hl.placePerpOrder(HL_CONFIG, { coin, side: closeSide, size, type: 'MARKET', reduceOnly: true });
+      result.steps.push({ step: 'abort_to_flat', result: flat });
+      result.abortedToFlat = true;
+      result.error = 'stop placement failed, position closed';
+      return result;
+    }
+    result.slOrderId = sl.orderId;
+
+    // 4. Take-profit levels
+    const tpIds: number[] = [];
+    for (const tp of d.take_profit_levels!) {
+      const tpPx = d.side === 'long' ? fillPx * (1 + tp.gain_pct / 100) : fillPx * (1 - tp.gain_pct / 100);
+      const tpSize = parseFloat((size * tp.close_fraction).toFixed(5));
+      const r = await hl.placeTriggerOrder(HL_CONFIG, { coin, side: closeSide, size: tpSize, triggerPx: tpPx, tpsl: 'tp', isMarket: true });
+      result.steps.push({ step: 'take_profit', gain_pct: tp.gain_pct, triggerPx: tpPx, size: tpSize, result: r });
+      if (r.success && r.orderId) tpIds.push(r.orderId);
+    }
+    result.tpOrderIds = tpIds;
+    return result;
+  }
+
+  if (d.decision_type === 'close_existing') {
+    const coin = d.asset!;
+    const pos = ctx.positions.find(p => p.coin === coin)!;
+    const closeSide = pos.side === 'long' ? 'SELL' : 'BUY';
+    const close = await hl.placePerpOrder(HL_CONFIG, { coin, side: closeSide, size: pos.size, type: 'MARKET', reduceOnly: true });
+    result.steps.push({ step: 'close', result: close });
+    if (!close.success) result.error = close.error;
+    return result;
+  }
+
+  // modify_existing: deferred — log and no-op for now
+  result.steps.push({ step: 'modify_existing', note: 'not yet implemented in v2' });
+  return result;
 }
 
 // ── MAIN ────────────────────────────────────────────────────────────────────
@@ -277,6 +400,14 @@ async function main() {
 
   const validation = validateDecision(decision, ctx);
 
+  // Execute only if validation passed and it's an actionable decision
+  let execution: ExecResult | null = null;
+  if (validation.ok && decision.decision_type !== 'no_action') {
+    log('info', 'executing decision', { type: decision.decision_type, dryRun: HL_CONFIG.dryRun });
+    execution = await executeDecision(decision, ctx);
+    log('info', 'execution complete', { dryRun: execution.dryRun, abortedToFlat: execution.abortedToFlat, error: execution.error });
+  }
+
   const entry = {
     timestamp: ctx.timestamp,
     network: ctx.network,
@@ -285,8 +416,9 @@ async function main() {
     decision,
     validation,
     llm_usage: usage,
-    executed: false, // v1 never executes
-    notes: 'v1: decision logged only, not executed on exchange',
+    executed: execution?.attempted ?? false,
+    execution,
+    notes: HL_CONFIG.dryRun ? 'v2 dry-run: execution path fired, no real orders' : 'v2 live execution',
   };
   appendDiary(entry);
 
