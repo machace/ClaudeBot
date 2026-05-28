@@ -251,6 +251,7 @@ SIZING & CONVICTION RULES (applied before each decision)
 - Open risk cap: total open risk (Tier 2 "Open risk" line) must stay well under 10% of equity. If this trade would push it over that threshold, reduce size proportionally or use no_action.
 - Drawdown throttle: if drawdown from peak equity exceeds 15%, cap ALL new position sizes at half of what you would otherwise choose. State this throttle explicitly in your reasoning field whenever it applies. The throttle lifts when equity recovers to within 5% of peak.
 - Size: size_usd must fall between $5 floor and the computed cap for the chosen asset at your selected confidence level. Caps are shown in the SIZING CAPS block above (one row per asset, three columns: high/med/low). Use the full cap for clean high-conviction setups; size below the cap when conviction is reduced. Do not exceed the cap under any circumstances.
+- Liquidity sweep: when an asset shows 'SwL' (recent sweep of swing low followed by close back above) treat as added long evidence — confirms stop-hunt absorbed by buyers. Mirror for 'SwH' as short evidence. A sweep is supporting evidence only — do not trade on a sweep alone without MTF and RS support. Cite the sweep in reasoning when it influenced the decision.
 
 YOUR DECISION LOG (last 10)
 
@@ -506,6 +507,9 @@ async function main() {
     llm_usage: usage,
     executed: execution?.attempted ?? false,
     execution,
+    // v1: detects "sweep" in reasoning text. Under-counts — model may cite
+    // "swing high rejected" or similar phrasing without the word "sweep".
+    sweep_influenced: /sweep/i.test(decision.reasoning ?? ''),
     notes: HL_CONFIG.dryRun ? 'v2 dry-run: execution path fired, no real orders' : 'v2 live execution',
   };
   appendDiary(entry);

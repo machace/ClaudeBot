@@ -18,6 +18,7 @@ export interface AssetSnapshot {
 
 export type Trend = 'up' | 'down' | 'flat';
 export type MTFAlignment = 'aligned_up' | 'aligned_down' | 'mixed';
+export type SweepState = 'swept_high' | 'swept_low' | null;
 
 export interface AssetTier1 {
   coin: string;
@@ -29,6 +30,7 @@ export interface AssetTier1 {
   trend4h: Trend;
   trend1d: Trend;
   mtfAlign: MTFAlignment;
+  sweep: SweepState;
 }
 
 export interface Tier1Signals {
@@ -88,6 +90,62 @@ function pctRank(value: number, all: number[]): number {
   return below / (n - 1);
 }
 
+// Selects bars in [-(lookback+excludeRecent), -excludeRecent) from already-closed candles.
+function findSwingHigh(closed: Candle[], lookback: number, excludeRecent: number): number {
+  const window = closed.slice(-(lookback + excludeRecent), -excludeRecent);
+  return window.length === 0 ? -Infinity : Math.max(...window.map(c => c.h));
+}
+
+function findSwingLow(closed: Candle[], lookback: number, excludeRecent: number): number {
+  const window = closed.slice(-(lookback + excludeRecent), -excludeRecent);
+  return window.length === 0 ? Infinity : Math.min(...window.map(c => c.l));
+}
+
+/**
+ * Detects a liquidity sweep on closed daily candles.
+ * A sweep fires when a candle wicks beyond a prior swing extreme AND a close
+ * retreats meaningfully back inside — defined as ≥25% of the wick's overshoot.
+ * Fraction-of-overshoot is chosen over ATR because it is self-contained
+ * (no extra parameter) and scales with the actual move size at the level.
+ * When both swept_high and swept_low fire (whipsaw), returns null — no clean signal.
+ */
+export function detectSweep(candles: Candle[], lookback = 20, recentBars = 3): SweepState {
+  const closed = closedCandles(candles);
+  if (closed.length < lookback + recentBars) return null;
+  const recent    = closed.slice(-recentBars);
+  const swingHigh = findSwingHigh(closed, lookback, recentBars);
+  const swingLow  = findSwingLow(closed, lookback, recentBars);
+
+  // swept_high: wick above swingHigh, close retreats ≥25% of overshoot back below
+  let sweptHigh = false;
+  for (let i = 0; i < recent.length; i++) {
+    if (recent[i].h > swingHigh) {
+      const minRetrace = swingHigh - 0.25 * (recent[i].h - swingHigh);
+      for (let j = i; j < recent.length; j++) {
+        if (recent[j].c < minRetrace) { sweptHigh = true; break; }
+      }
+      if (sweptHigh) break;
+    }
+  }
+
+  // swept_low: wick below swingLow, close retreats ≥25% of overshoot back above
+  let sweptLow = false;
+  for (let i = 0; i < recent.length; i++) {
+    if (recent[i].l < swingLow) {
+      const minRetrace = swingLow + 0.25 * (swingLow - recent[i].l);
+      for (let j = i; j < recent.length; j++) {
+        if (recent[j].c > minRetrace) { sweptLow = true; break; }
+      }
+      if (sweptLow) break;
+    }
+  }
+
+  if (sweptHigh && sweptLow) return null; // whipsaw — not a clean signal
+  if (sweptLow)  return 'swept_low';
+  if (sweptHigh) return 'swept_high';
+  return null;
+}
+
 // ── EXPORTED FUNCTIONS ────────────────────────────────────────────────────────
 
 export function computeTier1(assets: AssetSnapshot[]): Tier1Signals {
@@ -120,7 +178,9 @@ export function computeTier1(assets: AssetSnapshot[]): Tier1Signals {
       downCount === 3 ? 'aligned_down' :
       'mixed';
 
-    return { coin: snap.coin, ret7d, ret30d, smaDistance, atrPct, trend1h, trend4h, trend1d, mtfAlign };
+    const sweep = detectSweep(snap.candles1d);
+
+    return { coin: snap.coin, ret7d, ret30d, smaDistance, atrPct, trend1h, trend4h, trend1d, mtfAlign, sweep };
   });
 
   // Percentile-rank each momentum metric across all assets, then average.
@@ -144,6 +204,7 @@ export function computeTier1(assets: AssetSnapshot[]): Tier1Signals {
       trend4h:  r.trend4h,
       trend1d:  r.trend1d,
       mtfAlign: r.mtfAlign,
+      sweep:    r.sweep,
     }));
 
   return { computedAt: new Date().toISOString(), assets: result };
@@ -288,7 +349,7 @@ export function formatTier1Block(signals: Tier1Signals): string {
   const n = signals.assets.length;
   const header =
     'TIER 1 SIGNALS (closed candles only)\n' +
-    'Rank  Asset   ATR%    7d       30d      MTF(1h/4h/1d)';
+    'Rank  Asset   ATR%    7d       30d      MTF(1h/4h/1d)  Sweep';
   const rows = signals.assets.map(a => {
     const rank  = `${a.rsRank}/${n}`.padStart(3);
     const coin  = a.coin.padEnd(7);
@@ -300,7 +361,8 @@ export function formatTier1Block(signals: Tier1Signals): string {
       a.mtfAlign === 'aligned_up'   ? 'ALIGNED_UP'   :
       a.mtfAlign === 'aligned_down' ? 'ALIGNED_DOWN' :
       'mixed';
-    return `${rank}  ${coin} ${atr}  ${r7}  ${r30}  ${arrows} ${align}`;
+    const sweep  = a.sweep === 'swept_high' ? 'SwH' : a.sweep === 'swept_low' ? 'SwL' : '—';
+    return `${rank}  ${coin} ${atr}  ${r7}  ${r30}  ${arrows} ${align}  ${sweep}`;
   });
   return [header, ...rows].join('\n');
 }
