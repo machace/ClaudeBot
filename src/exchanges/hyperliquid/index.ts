@@ -117,6 +117,7 @@ export interface PerpOrder {
   price?: number;
   type?: 'LIMIT' | 'MARKET';
   reduceOnly?: boolean;
+  leverage?: number;
   postOnly?: boolean;
   clientOrderId?: string;
 }
@@ -870,6 +871,15 @@ export async function placePerpOrder(
     // Normalize symbol: price feeds use bare 'BTC', order endpoint needs 'BTC-PERP'
     const bareCoin = order.coin.replace('-PERP', '');
     const sdkCoin = `${bareCoin}-PERP`;
+    // Set leverage before opening so the position doesn't inherit a stale
+    // account default. Abort the open if leverage can't be set — better no
+    // position than one at unknown/surprise leverage.
+    if (order.leverage && !order.reduceOnly) {
+      const lev = await updateLeverage(config, bareCoin, order.leverage, true);
+      if (!lev.success && !lev.dryRun) {
+        return { success: false, error: `Failed to set leverage to ${order.leverage}x: ${lev.error}` };
+      }
+    }
     // Get current price for market orders
     let limitPx = order.price;
     if (!limitPx || order.type === 'MARKET') {
@@ -1031,7 +1041,8 @@ export async function cancelOrder(
 
   try {
     const sdk = getSDK(config);
-    await sdk.exchange.cancelOrder({ coin, o: oid });
+    const sdkCoin = `${coin.replace('-PERP', '')}-PERP`;
+    await sdk.exchange.cancelOrder({ coin: sdkCoin, o: oid });
     return { success: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -1054,7 +1065,8 @@ export async function cancelOrderByCloid(
 
   try {
     const sdk = getSDK(config);
-    await sdk.exchange.cancelOrderByCloid(coin, cloid);
+    const sdkCoin = `${coin.replace('-PERP', '')}-PERP`;
+    await sdk.exchange.cancelOrderByCloid(sdkCoin, cloid);
     return { success: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -1077,13 +1089,13 @@ export async function modifyOrder(
 
   try {
     const sdk = getSDK(config);
+    const sdkCoin = `${order.coin.replace('-PERP', '')}-PERP`;
     const tif = order.type === 'MARKET' ? 'Ioc' : order.postOnly ? 'Alo' : 'Gtc';
-
     await sdk.exchange.modifyOrder(oid, {
-      coin: order.coin,
+      coin: sdkCoin,
       is_buy: order.side === 'BUY',
       sz: order.size,
-      limit_px: order.price ?? 0,
+      limit_px: order.price ? roundPxHL(order.price) : 0,
       order_type: { limit: { tif } },
       reduce_only: order.reduceOnly ?? false,
     });
@@ -1176,7 +1188,8 @@ export async function updateLeverage(
 
   try {
     const sdk = getSDK(config);
-    await sdk.exchange.updateLeverage(coin, isCross ? 'cross' : 'isolated', leverage);
+    const sdkCoin = `${coin.replace('-PERP', '')}-PERP`;
+    await sdk.exchange.updateLeverage(sdkCoin, isCross ? 'cross' : 'isolated', leverage);
     return { success: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
