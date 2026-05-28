@@ -846,6 +846,16 @@ export async function getDelegatorRewards(userAddress: string): Promise<Array<{
 /**
  * Place a perp order
  */
+
+/**
+ * Round a price to Hyperliquid's precision rules.
+ * Perps allow max 5 significant figures; integer prices are always valid.
+ */
+function roundPxHL(px: number): number {
+  if (px >= 10000) return Math.round(px);
+  return parseFloat(px.toPrecision(5));
+}
+
 export async function placePerpOrder(
   config: HyperliquidConfig,
   order: PerpOrder
@@ -857,19 +867,20 @@ export async function placePerpOrder(
 
   try {
     const sdk = getSDK(config);
-
+    // Normalize symbol: price feeds use bare 'BTC', order endpoint needs 'BTC-PERP'
+    const bareCoin = order.coin.replace('-PERP', '');
+    const sdkCoin = `${bareCoin}-PERP`;
     // Get current price for market orders
     let limitPx = order.price;
     if (!limitPx || order.type === 'MARKET') {
       const mids = await getAllMids();
-      const mid = parseFloat(mids[order.coin] ?? '0');
+      const mid = parseFloat(mids[bareCoin] ?? '0');
       limitPx = order.side === 'BUY' ? mid * 1.005 : mid * 0.995;
     }
-
+    limitPx = roundPxHL(limitPx!);
     const tif = order.type === 'MARKET' ? 'Ioc' : order.postOnly ? 'Alo' : 'Gtc';
-
     const result = await sdk.exchange.placeOrder({
-      coin: order.coin,
+      coin: sdkCoin,
       is_buy: order.side === 'BUY',
       sz: order.size,
       limit_px: limitPx,
@@ -897,6 +908,67 @@ export async function placePerpOrder(
     return { success: false, error: message };
   }
 }
+
+/**
+ * Place a trigger order (stop-loss or take-profit) on Hyperliquid.
+ * Rests on the exchange and fires automatically when triggerPx is reached —
+ * protects positions between DECIDE cycles without needing the bot online.
+ */
+export async function placeTriggerOrder(
+  config: HyperliquidConfig,
+  params: {
+    coin: string;
+    side: 'BUY' | 'SELL';
+    size: number;
+    triggerPx: number;
+    tpsl: 'tp' | 'sl';
+    isMarket?: boolean;
+  }
+): Promise<OrderResult> {
+  if (config.dryRun) {
+    logger.info({ params }, '[DRY RUN] Would place Hyperliquid trigger order');
+    return { success: true, orderId: Date.now(), dryRun: true, message: "DRY RUN — simulated, no actual trigger order placed" };
+  }
+    try {
+    const sdk = getSDK(config);
+    const bareCoin = params.coin.replace('-PERP', '');
+    const sdkCoin = `${bareCoin}-PERP`;
+    const isMarket = params.isMarket ?? true;
+    const triggerPx = roundPxHL(params.triggerPx);
+    const limitPx = roundPxHL(isMarket
+      ? (params.side === 'BUY' ? triggerPx * 1.05 : triggerPx * 0.95)
+      : triggerPx);
+    const result = await sdk.exchange.placeOrder({
+      coin: sdkCoin,
+      is_buy: params.side === 'BUY',
+      sz: params.size,
+      limit_px: limitPx,
+      order_type: {
+        trigger: {
+          triggerPx,
+          isMarket,
+          tpsl: params.tpsl,
+        },
+      },
+      reduce_only: true,
+    });
+
+    const status = result?.response?.data?.statuses?.[0];
+    const orderId = status?.resting?.oid || status?.filled?.oid;
+    if (status?.error) {
+      return { success: false, error: status.error };
+    }
+    if (!orderId) {
+      logger.warn({ result, params }, 'Hyperliquid trigger order: no order ID in response');
+      return { success: false, error: 'No order ID returned from exchange' };
+    }
+    return { success: true, orderId };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { success: false, error: message };
+  }
+}
+
 
 /**
  * Place a spot order
