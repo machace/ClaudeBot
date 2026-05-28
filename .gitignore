@@ -83,3 +83,6 @@ src/api/
 .vercel
 data/decisions.jsonl
 data/lessons.jsonl
+.env.backup*
+.env
+data/
