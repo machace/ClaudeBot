@@ -17,6 +17,7 @@ import * as hl from '/home/kaan/clodds/dist/exchanges/hyperliquid/index.js';
 const TESTNET = process.env.HYPERLIQUID_NETWORK === 'testnet';
 const API_URL = TESTNET ? 'https://api.hyperliquid-testnet.xyz' : 'https://api.hyperliquid.xyz';
 const POLL_SECONDS = parseInt(process.env.WATCHDOG_POLL_SECONDS || '30', 10);
+const GRACE_SECONDS = parseInt(process.env.WATCHDOG_GRACE_SECONDS || '90', 10);
 const DEFAULT_STOP_PCT = parseFloat(process.env.WATCHDOG_DEFAULT_STOP_PCT || '5');
 const DIARY_PATH = '/home/kaan/clodds/data/decisions.jsonl';
 const VAULT = process.env.HYPERLIQUID_VAULT_ADDRESS!;
@@ -37,6 +38,16 @@ async function hlPost(body: object): Promise<any> {
   });
   if (!res.ok) throw new Error(`Hyperliquid ${res.status}: ${await res.text()}`);
   return res.json();
+}
+
+async function latestOpenFillTime(coin: string): Promise<number | null> {
+  const fills = await hlPost({ type: 'userFills', user: VAULT });
+  for (const f of (fills || [])) {
+    if (f.coin === coin && typeof f.dir === 'string' && f.dir.startsWith('Open')) {
+      return f.time; // fills are newest-first; first Open match is the most recent
+    }
+  }
+  return null;
 }
 
 // Find the most recent open_new decision for this coin to recover its stop_loss_pct
@@ -81,6 +92,14 @@ async function checkOnce() {
       continue;
     }
 
+// Grace period: skip very-recently-opened positions — DECIDE may still be
+    // mid-execution (open done, stop placement in flight). Avoids a redundant
+    // recovery stop racing DECIDE's intended stop.
+    const openedAt = await latestOpenFillTime(coin);
+    if (openedAt && (Date.now() - openedAt) < GRACE_SECONDS * 1000) {
+      log('info', 'naked but within grace — skipping this cycle', { coin, ageMs: Date.now() - openedAt, graceSeconds: GRACE_SECONDS });
+      continue;
+    }
     // NAKED POSITION — reconstruct a stop
     log('warn', 'NAKED POSITION detected — no resting stop', { coin, side, size });
     const mids = await hlPost({ type: 'allMids' });
